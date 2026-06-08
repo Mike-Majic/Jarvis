@@ -1,0 +1,25 @@
+{
+  "name": "jarvis-discord-ai-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord AI in italiano basato su Node.js, discord.js e OpenAI API.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "ai",
+    "openai",
+    "jarvis"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.5.0",
+    "openai": "^4.104.0"
+  }
+}
