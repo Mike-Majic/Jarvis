@@ -135,3 +135,56 @@ La memoria è volutamente semplice:
 - viene cancellata quando il bot viene riavviato.
 
 In futuro potrà essere sostituita o estesa con un database.
+
+## Indicizzazione locale dei canali
+
+Jarvis include una prima struttura per indicizzare i messaggi del canale corrente in un archivio locale.
+
+### Comando temporaneo per amministratori
+
+Un amministratore del server può scrivere nel canale:
+
+```text
+Jarvis indicizza questo canale
+```
+
+Jarvis recupererà i messaggi storici del canale a blocchi tramite l'API Discord e salverà un file JSON nella cartella `data/`.
+
+Al termine risponderà indicando:
+
+- quanti messaggi sono stati salvati;
+- quanti allegati sono stati trovati.
+
+### Dati salvati
+
+Per ogni canale viene creato un file:
+
+```text
+data/<channelId>.json
+```
+
+Per ogni messaggio vengono salvati solo testo e metadati:
+
+- `messageId`
+- `channelId`
+- `authorId`
+- `authorTag`
+- `createdAt`
+- `content`
+- `attachments`, con:
+  - nome file;
+  - URL;
+  - content type;
+  - dimensione.
+
+### Limiti attuali dell'indicizzazione
+
+Per ora Jarvis:
+
+- non scarica gli allegati;
+- non legge PDF, Excel o Word;
+- non usa database;
+- non invia i dati indicizzati a OpenAI;
+- salva solo un archivio JSON locale per canale.
+
+La scansione usa pause tra i blocchi e tentativi automatici in caso di errori temporanei o rate limit.

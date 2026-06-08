@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import OpenAI from 'openai';
-import { Client, Events, GatewayIntentBits, Partials } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits } from 'discord.js';
+import { indexChannelById } from './src/discordIndexer.js';
 
 const { DISCORD_TOKEN, OPENAI_API_KEY, OPENAI_MODEL = 'gpt-4.1-mini' } = process.env;
 
@@ -31,6 +32,46 @@ const channelMemory = new Map();
 const MAX_MEMORY_MESSAGES = 10;
 const DISCORD_MESSAGE_LIMIT = 2000;
 const SAFE_MESSAGE_LIMIT = 1900;
+const INDEX_CHANNEL_COMMAND = 'jarvis indicizza questo canale';
+
+function isIndexChannelCommand(message) {
+  return (message.content ?? '').trim().toLowerCase() === INDEX_CHANNEL_COMMAND;
+}
+
+function isAdministrator(message) {
+  return Boolean(message.member?.permissions?.has(PermissionFlagsBits.Administrator));
+}
+
+async function handleIndexChannelCommand(message) {
+  if (!isAdministrator(message)) {
+    await message.reply({
+      content: "Solo un amministratore può avviare l'indicizzazione di questo canale.",
+      allowedMentions: { repliedUser: false }
+    });
+    return;
+  }
+
+  try {
+    await message.reply({
+      content: 'Indicizzazione del canale avviata. Potrebbe richiedere qualche minuto...',
+      allowedMentions: { repliedUser: false }
+    });
+
+    const result = await indexChannelById(client, message.channel.id);
+
+    await message.reply({
+      content: `Indicizzazione completata: ho salvato ${result.messageCount} messaggi e trovato ${result.attachmentCount} allegati.`,
+      allowedMentions: { repliedUser: false }
+    });
+  } catch (error) {
+    console.error("Errore durante l'indicizzazione del canale:", error);
+
+    await message.reply({
+      content: 'Mi dispiace, non sono riuscito a indicizzare questo canale. Controlla i permessi del bot e riprova.',
+      allowedMentions: { repliedUser: false }
+    });
+  }
+}
 
 function shouldReply(message) {
   const content = message.content ?? '';
@@ -124,6 +165,11 @@ client.once(Events.ClientReady, (readyClient) => {
 client.on(Events.MessageCreate, async (message) => {
   // Ignora messaggi di altri bot per evitare loop o risposte indesiderate.
   if (message.author.bot) return;
+
+  if (isIndexChannelCommand(message)) {
+    await handleIndexChannelCommand(message);
+    return;
+  }
 
   if (!shouldReply(message)) return;
 

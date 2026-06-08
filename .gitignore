@@ -25,3 +25,6 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+
+# Archivio locale generato dall'indicizzazione Discord
+data/
