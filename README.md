@@ -57,6 +57,7 @@ Poi apri `.env` e inserisci i valori reali:
 DISCORD_TOKEN=il_token_del_tuo_bot_discord
 OPENAI_API_KEY=la_tua_chiave_openai
 OPENAI_MODEL=gpt-4.1-mini
+INDEX_MAX_MESSAGES=5000
 ```
 
 > Non committare mai il file `.env`: contiene segreti ed è già escluso da Git.
@@ -138,44 +139,96 @@ In futuro potrà essere sostituita o estesa con un database.
 
 ## Indicizzazione locale dei canali
 
-Jarvis include una prima struttura per indicizzare i messaggi del canale corrente in un archivio locale.
+Jarvis include una prima struttura per indicizzare lo storico del canale corrente in un archivio locale. Questa funzione serve a preparare una base dati JSON che in futuro potrà essere usata per ricerca, riassunti o ulteriori elaborazioni.
 
-### Comando temporaneo per amministratori
+### Comandi temporanei per amministratori
 
-Un amministratore del server può scrivere nel canale:
+I comandi di archivio funzionano solo se l'utente ha permessi amministratore.
+
+Per indicizzare il canale corrente scrivi:
 
 ```text
 Jarvis indicizza questo canale
 ```
 
-Jarvis recupererà i messaggi storici del canale a blocchi tramite l'API Discord e salverà un file JSON nella cartella `data/`.
-
-Al termine risponderà indicando:
+Jarvis recupererà i messaggi storici del canale a blocchi da 100 messaggi tramite l'API Discord e salverà un file JSON nella cartella `data/`. Al termine risponderà indicando:
 
 - quanti messaggi sono stati salvati;
-- quanti allegati sono stati trovati.
+- quanti allegati sono stati trovati;
+- il percorso del file JSON creato.
+
+Per controllare cosa è già stato salvato nell'archivio locale scrivi:
+
+```text
+Jarvis stato archivio
+```
+
+Jarvis risponderà con il numero di file `channel_*.json` presenti e, per ogni canale indicizzato, mostrerà nome canale, messaggi salvati, allegati trovati e data dell'ultima indicizzazione.
+
+Per cancellare solo l'archivio JSON del canale corrente scrivi:
+
+```text
+Jarvis cancella archivio questo canale
+```
+
+Il comando elimina solo `data/channel_<channelId>.json` del canale corrente. Non chiede conferma e risponde se il file è stato cancellato, se non era presente o se si è verificato un errore.
+
+Per cancellare e ricreare l'archivio del canale corrente scrivi:
+
+```text
+Jarvis reindicizza questo canale
+```
+
+Jarvis rimuove il vecchio JSON del canale corrente, se esiste, poi rilancia l'indicizzazione e risponde con messaggi salvati, allegati trovati e percorso del file creato.
+
+
+### Procedura operativa consigliata - fase A
+
+Per preparare lo storico prima di costruire la ricerca:
+
+1. Entra nel canale dedicato alle procedure.
+2. Scrivi `Jarvis indicizza questo canale`.
+3. Attendi il messaggio di completamento con numero messaggi, allegati e percorso file.
+4. Ripeti la stessa operazione nei canali importanti, ad esempio storico, interventi e numeri.
+5. Scrivi `Jarvis stato archivio` per controllare quali canali sono stati salvati e quando sono stati indicizzati.
+6. Se vuoi rifare un canale, entra in quel canale e scrivi `Jarvis reindicizza questo canale`.
 
 ### Dati salvati
 
 Per ogni canale viene creato un file:
 
 ```text
-data/<channelId>.json
+data/channel_<channelId>.json
 ```
 
 Per ogni messaggio vengono salvati solo testo e metadati:
 
 - `messageId`
 - `channelId`
+- `channelName`
+- `guildId`
 - `authorId`
 - `authorTag`
 - `createdAt`
 - `content`
 - `attachments`, con:
+  - ID;
   - nome file;
   - URL;
   - content type;
   - dimensione.
+
+### Limite massimo di sicurezza
+
+Per evitare scansioni troppo grandi o loop indesiderati, Jarvis usa un limite massimo di messaggi indicizzabili per singolo comando.
+
+Nel file `.env` puoi configurarlo così:
+
+```env
+INDEX_MAX_MESSAGES=5000
+```
+
+Se la variabile non è presente o non è valida, Jarvis usa `5000` come valore predefinito.
 
 ### Limiti attuali dell'indicizzazione
 

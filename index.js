@@ -1,7 +1,13 @@
 import 'dotenv/config';
 import OpenAI from 'openai';
 import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits } from 'discord.js';
-import { indexChannelById } from './src/discordIndexer.js';
+import {
+  ChannelNotFetchableError,
+  deleteChannelArchive,
+  getArchiveStatus,
+  indexChannelById,
+  reindexChannelById
+} from './src/discordIndexer.js';
 
 const { DISCORD_TOKEN, OPENAI_API_KEY, OPENAI_MODEL = 'gpt-4.1-mini' } = process.env;
 
@@ -33,23 +39,72 @@ const MAX_MEMORY_MESSAGES = 10;
 const DISCORD_MESSAGE_LIMIT = 2000;
 const SAFE_MESSAGE_LIMIT = 1900;
 const INDEX_CHANNEL_COMMAND = 'jarvis indicizza questo canale';
+const ARCHIVE_STATUS_COMMAND = 'jarvis stato archivio';
+const DELETE_CHANNEL_ARCHIVE_COMMAND = 'jarvis cancella archivio questo canale';
+const REINDEX_CHANNEL_COMMAND = 'jarvis reindicizza questo canale';
+const DEFAULT_INDEX_MAX_MESSAGES = 5000;
+const INDEX_MAX_MESSAGES = Number.parseInt(process.env.INDEX_MAX_MESSAGES ?? `${DEFAULT_INDEX_MAX_MESSAGES}`, 10);
+const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX_MESSAGES > 0
+  ? INDEX_MAX_MESSAGES
+  : DEFAULT_INDEX_MAX_MESSAGES;
+
+function getNormalizedContent(message) {
+  return (message.content ?? '').trim().toLowerCase();
+}
 
 function isIndexChannelCommand(message) {
-  return (message.content ?? '').trim().toLowerCase() === INDEX_CHANNEL_COMMAND;
+  return getNormalizedContent(message) === INDEX_CHANNEL_COMMAND;
+}
+
+function isArchiveStatusCommand(message) {
+  return getNormalizedContent(message) === ARCHIVE_STATUS_COMMAND;
+}
+
+function isDeleteChannelArchiveCommand(message) {
+  return getNormalizedContent(message) === DELETE_CHANNEL_ARCHIVE_COMMAND;
+}
+
+function isReindexChannelCommand(message) {
+  return getNormalizedContent(message) === REINDEX_CHANNEL_COMMAND;
+}
+
+function isArchiveCommand(message) {
+  return isIndexChannelCommand(message)
+    || isArchiveStatusCommand(message)
+    || isDeleteChannelArchiveCommand(message)
+    || isReindexChannelCommand(message);
 }
 
 function isAdministrator(message) {
   return Boolean(message.member?.permissions?.has(PermissionFlagsBits.Administrator));
 }
 
-async function handleIndexChannelCommand(message) {
-  if (!isAdministrator(message)) {
-    await message.reply({
-      content: "Solo un amministratore può avviare l'indicizzazione di questo canale.",
-      allowedMentions: { repliedUser: false }
-    });
-    return;
+async function ensureAdministrator(message) {
+  if (isAdministrator(message)) return true;
+
+  await message.reply({
+    content: "Solo un amministratore può gestire l'archivio locale di Jarvis.",
+    allowedMentions: { repliedUser: false }
+  });
+  return false;
+}
+
+function buildIndexErrorMessage(error) {
+  if (error instanceof ChannelNotFetchableError) {
+    return 'Questo canale non supporta il recupero dei messaggi storici.';
   }
+
+  return 'Mi dispiace, non sono riuscito a indicizzare questo canale. Controlla che il bot abbia i permessi per vedere il canale e leggere la cronologia messaggi.';
+}
+
+async function replyWithChunks(message, content) {
+  for (const chunk of splitDiscordMessage(content)) {
+    await message.reply({ content: chunk, allowedMentions: { repliedUser: false } });
+  }
+}
+
+async function handleIndexChannelCommand(message) {
+  if (!(await ensureAdministrator(message))) return;
 
   try {
     await message.reply({
@@ -57,19 +112,141 @@ async function handleIndexChannelCommand(message) {
       allowedMentions: { repliedUser: false }
     });
 
-    const result = await indexChannelById(client, message.channel.id);
+    const result = await indexChannelById(client, message.channel.id, {
+      maxMessages: SAFE_INDEX_MAX_MESSAGES
+    });
 
     await message.reply({
-      content: `Indicizzazione completata: ho salvato ${result.messageCount} messaggi e trovato ${result.attachmentCount} allegati.`,
+      content: `Indicizzazione completata: ho salvato ${result.totalMessages} messaggi e trovato ${result.totalAttachments} allegati. File creato: ${result.filePath}`,
       allowedMentions: { repliedUser: false }
     });
   } catch (error) {
     console.error("Errore durante l'indicizzazione del canale:", error);
 
+    try {
+      await message.reply({
+        content: buildIndexErrorMessage(error),
+        allowedMentions: { repliedUser: false }
+      });
+    } catch (replyError) {
+      console.error("Errore durante l'invio del messaggio di errore dell'indicizzazione:", replyError);
+    }
+  }
+}
+
+async function handleArchiveStatusCommand(message) {
+  if (!(await ensureAdministrator(message))) return;
+
+  try {
+    const status = await getArchiveStatus();
+
+    if (status.totalFiles === 0) {
+      await message.reply({
+        content: 'Archivio vuoto: non ho trovato file `channel_*.json` nella cartella `data/`.',
+        allowedMentions: { repliedUser: false }
+      });
+      return;
+    }
+
+    const lines = [
+      `Archivio locale: ${status.totalFiles} file channel_*.json trovati in ${status.dataDir}.`,
+      '',
+      'Canali indicizzati:'
+    ];
+
+    for (const channel of status.channels) {
+      const warning = channel.invalid ? ' ⚠️ file non leggibile' : '';
+      lines.push(
+        `- ${channel.channelName} (${channel.channelId}): ${channel.totalMessages} messaggi, ${channel.totalAttachments} allegati, ultima indicizzazione: ${channel.indexedAt ?? 'non disponibile'}.${warning}`
+      );
+    }
+
+    await replyWithChunks(message, lines.join('\n'));
+  } catch (error) {
+    console.error("Errore durante la lettura dello stato dell'archivio:", error);
     await message.reply({
-      content: 'Mi dispiace, non sono riuscito a indicizzare questo canale. Controlla i permessi del bot e riprova.',
+      content: "Non sono riuscito a leggere lo stato dell'archivio locale. Controlla i log del bot.",
       allowedMentions: { repliedUser: false }
     });
+  }
+}
+
+async function handleDeleteChannelArchiveCommand(message) {
+  if (!(await ensureAdministrator(message))) return;
+
+  try {
+    const result = await deleteChannelArchive(message.channel.id);
+
+    if (result.deleted) {
+      await message.reply({
+        content: `Archivio del canale corrente cancellato: ${result.filePath}`,
+        allowedMentions: { repliedUser: false }
+      });
+      return;
+    }
+
+    await message.reply({
+      content: `Nessun archivio da cancellare per questo canale. File non presente: ${result.filePath}`,
+      allowedMentions: { repliedUser: false }
+    });
+  } catch (error) {
+    console.error("Errore durante la cancellazione dell'archivio del canale:", error);
+    await message.reply({
+      content: "Errore durante la cancellazione dell'archivio del canale. Controlla i log del bot.",
+      allowedMentions: { repliedUser: false }
+    });
+  }
+}
+
+async function handleReindexChannelCommand(message) {
+  if (!(await ensureAdministrator(message))) return;
+
+  try {
+    await message.reply({
+      content: 'Reindicizzazione del canale avviata: cancello il vecchio JSON se presente e ricreo l\'archivio...',
+      allowedMentions: { repliedUser: false }
+    });
+
+    const result = await reindexChannelById(client, message.channel.id, {
+      maxMessages: SAFE_INDEX_MAX_MESSAGES
+    });
+
+    await message.reply({
+      content: `Reindicizzazione completata: ho salvato ${result.totalMessages} messaggi e trovato ${result.totalAttachments} allegati. File creato: ${result.filePath}`,
+      allowedMentions: { repliedUser: false }
+    });
+  } catch (error) {
+    console.error('Errore durante la reindicizzazione del canale:', error);
+
+    try {
+      await message.reply({
+        content: buildIndexErrorMessage(error),
+        allowedMentions: { repliedUser: false }
+      });
+    } catch (replyError) {
+      console.error("Errore durante l'invio del messaggio di errore della reindicizzazione:", replyError);
+    }
+  }
+}
+
+async function handleArchiveCommand(message) {
+  if (isIndexChannelCommand(message)) {
+    await handleIndexChannelCommand(message);
+    return;
+  }
+
+  if (isArchiveStatusCommand(message)) {
+    await handleArchiveStatusCommand(message);
+    return;
+  }
+
+  if (isDeleteChannelArchiveCommand(message)) {
+    await handleDeleteChannelArchiveCommand(message);
+    return;
+  }
+
+  if (isReindexChannelCommand(message)) {
+    await handleReindexChannelCommand(message);
   }
 }
 
@@ -166,8 +343,8 @@ client.on(Events.MessageCreate, async (message) => {
   // Ignora messaggi di altri bot per evitare loop o risposte indesiderate.
   if (message.author.bot) return;
 
-  if (isIndexChannelCommand(message)) {
-    await handleIndexChannelCommand(message);
+  if (isArchiveCommand(message)) {
+    await handleArchiveCommand(message);
     return;
   }
 
