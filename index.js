@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { createServer } from 'node:http';
 import OpenAI from 'openai';
 import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits } from 'discord.js';
 import {
@@ -47,6 +48,33 @@ const INDEX_MAX_MESSAGES = Number.parseInt(process.env.INDEX_MAX_MESSAGES ?? `${
 const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX_MESSAGES > 0
   ? INDEX_MAX_MESSAGES
   : DEFAULT_INDEX_MAX_MESSAGES;
+const RAW_PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
+const PORT = Number.isFinite(RAW_PORT) && RAW_PORT > 0 ? RAW_PORT : 3000;
+
+function startHealthServer() {
+  const server = createServer((request, response) => {
+    const path = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`).pathname;
+
+    if (path === '/healthz') {
+      response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      response.end('ok');
+      return;
+    }
+
+    if (path === '/') {
+      response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+      response.end('Jarvis is running');
+      return;
+    }
+
+    response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    response.end('Not found');
+  });
+
+  server.listen(PORT, () => {
+    console.log(`Health server in ascolto sulla porta ${PORT}`);
+  });
+}
 
 function getNormalizedContent(message) {
   return (message.content ?? '').trim().toLowerCase();
@@ -376,6 +404,8 @@ client.on(Events.MessageCreate, async (message) => {
     }
   }
 });
+
+startHealthServer();
 
 client.login(DISCORD_TOKEN).catch((error) => {
   console.error('Errore durante il login del bot Discord:', error);

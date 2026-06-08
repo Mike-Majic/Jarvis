@@ -137,6 +137,19 @@ La memoria è volutamente semplice:
 
 In futuro potrà essere sostituita o estesa con un database.
 
+
+## Health check per Render
+
+Per funzionare come **Render Web Service**, Jarvis avvia anche un piccolo server HTTP interno usando solo moduli Node.js nativi.
+
+Endpoint disponibili:
+
+- `GET /` risponde `Jarvis is running`;
+- `GET /healthz` risponde `ok`;
+- gli altri percorsi rispondono `404`.
+
+La porta viene letta da `PORT`, impostata automaticamente da Render, con fallback locale a `3000`.
+
 ## Indicizzazione locale dei canali
 
 Jarvis include una prima struttura per indicizzare lo storico del canale corrente in un archivio locale. Questa funzione serve a preparare una base dati JSON che in futuro potrà essere usata per ricerca, riassunti o ulteriori elaborazioni.
