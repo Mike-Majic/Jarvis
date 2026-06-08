@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { createServer } from 'node:http';
-import OpenAI from 'openai';
+import { GoogleGenAI } from '@google/genai';
 import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits } from 'discord.js';
 import {
   ChannelNotFetchableError,
@@ -10,19 +10,19 @@ import {
   reindexChannelById
 } from './src/discordIndexer.js';
 
-const { DISCORD_TOKEN, OPENAI_API_KEY, OPENAI_MODEL = 'gpt-4.1-mini' } = process.env;
+const { DISCORD_TOKEN, GEMINI_API_KEY, GEMINI_MODEL = 'gemini-2.5-flash' } = process.env;
 
 if (!DISCORD_TOKEN) {
   console.error('Errore: DISCORD_TOKEN non è configurato nel file .env');
   process.exit(1);
 }
 
-if (!OPENAI_API_KEY) {
-  console.error('Errore: OPENAI_API_KEY non è configurato nel file .env');
+if (!GEMINI_API_KEY) {
+  console.error('Errore: GEMINI_API_KEY non è configurato nel file .env');
   process.exit(1);
 }
 
-const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+const gemini = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 const client = new Client({
   intents: [
@@ -343,24 +343,56 @@ function splitDiscordMessage(text) {
   return chunks.map((chunk) => chunk.slice(0, DISCORD_MESSAGE_LIMIT));
 }
 
-async function askOpenAI(channelId, prompt) {
+function convertHistoryToGeminiContents(history, prompt) {
+  return [
+    ...history.map((message) => ({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: message.content }]
+    })),
+    {
+      role: 'user',
+      parts: [{ text: prompt }]
+    }
+  ];
+}
+
+function isGeminiQuotaOrApiKeyError(error) {
+  const message = `${error?.message ?? ''} ${error?.status ?? ''} ${error?.code ?? ''}`.toLowerCase();
+  return message.includes('quota')
+    || message.includes('api key')
+    || message.includes('apikey')
+    || message.includes('permission')
+    || message.includes('unauthorized')
+    || message.includes('forbidden')
+    || message.includes('429')
+    || message.includes('401')
+    || message.includes('403');
+}
+
+async function askGemini(channelId, prompt) {
   const history = getChannelHistory(channelId);
 
-  const completion = await openai.chat.completions.create({
-    model: OPENAI_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content:
-          'Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico e utile. Se non sai qualcosa, dillo chiaramente e chiedi dettagli.'
-      },
-      ...history,
-      { role: 'user', content: prompt }
-    ],
-    temperature: 0.4
-  });
+  try {
+    const response = await gemini.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: convertHistoryToGeminiContents(history, prompt),
+      config: {
+        systemInstruction:
+          'Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico e utile. Se non sai qualcosa, dillo chiaramente e chiedi dettagli.',
+        temperature: 0.4
+      }
+    });
 
-  return completion.choices?.[0]?.message?.content?.trim() || 'Mi dispiace, non sono riuscito a generare una risposta.';
+    return response.text?.trim() || 'Mi dispiace, non sono riuscito a generare una risposta.';
+  } catch (error) {
+    if (isGeminiQuotaOrApiKeyError(error)) {
+      console.error('Errore Gemini API key/quota:', error);
+    } else {
+      console.error('Errore durante la chiamata a Gemini:', error);
+    }
+
+    throw error;
+  }
 }
 
 client.once(Events.ClientReady, (readyClient) => {
@@ -383,7 +415,7 @@ client.on(Events.MessageCreate, async (message) => {
   try {
     await message.channel.sendTyping();
 
-    const reply = await askOpenAI(message.channel.id, prompt);
+    const reply = await askGemini(message.channel.id, prompt);
 
     rememberMessage(message.channel.id, 'user', prompt);
     rememberMessage(message.channel.id, 'assistant', reply);

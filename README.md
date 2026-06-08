@@ -14,7 +14,7 @@ Non usa comandi slash: gli utenti possono scrivere normalmente nel canale, ad es
 - Legge i messaggi normali nei canali Discord.
 - Risponde solo se viene menzionato oppure se il messaggio contiene la parola `Jarvis`.
 - Ignora i messaggi inviati da altri bot.
-- Usa OpenAI API per generare risposte.
+- Usa Gemini API per generare risposte.
 - Risponde sempre in italiano.
 - Mantiene una piccola memoria conversazionale per canale, salvata solo in RAM.
 - Divide automaticamente le risposte troppo lunghe in più messaggi compatibili con Discord.
@@ -31,9 +31,12 @@ Questa è una base funzionante. Per ora Jarvis **non**:
 
 ## Requisiti
 
+Jarvis usa il pacchetto ufficiale `@google/genai` per comunicare con Gemini API.
+
+
 - Node.js 18 o superiore.
 - Un bot Discord creato nel [Discord Developer Portal](https://discord.com/developers/applications).
-- Una chiave API OpenAI.
+- Una chiave API Gemini.
 
 ## Installazione
 
@@ -55,8 +58,8 @@ Poi apri `.env` e inserisci i valori reali:
 
 ```env
 DISCORD_TOKEN=il_token_del_tuo_bot_discord
-OPENAI_API_KEY=la_tua_chiave_openai
-OPENAI_MODEL=gpt-4.1-mini
+GEMINI_API_KEY=la_tua_chiave_gemini
+GEMINI_MODEL=gemini-2.5-flash
 INDEX_MAX_MESSAGES=5000
 ```
 
@@ -113,7 +116,7 @@ Oppure menziona il bot:
 @Jarvis cosa devo fare in caso di guasto FTTH?
 ```
 
-Jarvis risponderà nel canale usando OpenAI.
+Jarvis risponderà nel canale usando Gemini API.
 
 ## Struttura del progetto
 
@@ -250,7 +253,7 @@ Per ora Jarvis:
 - non scarica gli allegati;
 - non legge PDF, Excel o Word;
 - non usa database;
-- non invia i dati indicizzati a OpenAI;
+- non invia i dati indicizzati a Gemini;
 - salva solo un archivio JSON locale per canale.
 
 La scansione usa pause tra i blocchi e tentativi automatici in caso di errori temporanei o rate limit.
