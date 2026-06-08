@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import OpenAI from 'openai';
 import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits } from 'discord.js';
-import { indexChannelById } from './src/discordIndexer.js';
+import { ChannelNotFetchableError, indexChannelById } from './src/discordIndexer.js';
 
 const { DISCORD_TOKEN, OPENAI_API_KEY, OPENAI_MODEL = 'gpt-4.1-mini' } = process.env;
 
@@ -33,6 +33,11 @@ const MAX_MEMORY_MESSAGES = 10;
 const DISCORD_MESSAGE_LIMIT = 2000;
 const SAFE_MESSAGE_LIMIT = 1900;
 const INDEX_CHANNEL_COMMAND = 'jarvis indicizza questo canale';
+const DEFAULT_INDEX_MAX_MESSAGES = 5000;
+const INDEX_MAX_MESSAGES = Number.parseInt(process.env.INDEX_MAX_MESSAGES ?? `${DEFAULT_INDEX_MAX_MESSAGES}`, 10);
+const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX_MESSAGES > 0
+  ? INDEX_MAX_MESSAGES
+  : DEFAULT_INDEX_MAX_MESSAGES;
 
 function isIndexChannelCommand(message) {
   return (message.content ?? '').trim().toLowerCase() === INDEX_CHANNEL_COMMAND;
@@ -57,19 +62,29 @@ async function handleIndexChannelCommand(message) {
       allowedMentions: { repliedUser: false }
     });
 
-    const result = await indexChannelById(client, message.channel.id);
+    const result = await indexChannelById(client, message.channel.id, {
+      maxMessages: SAFE_INDEX_MAX_MESSAGES
+    });
 
     await message.reply({
-      content: `Indicizzazione completata: ho salvato ${result.messageCount} messaggi e trovato ${result.attachmentCount} allegati.`,
+      content: `Indicizzazione completata: ho salvato ${result.totalMessages} messaggi e trovato ${result.totalAttachments} allegati. File creato: ${result.filePath}`,
       allowedMentions: { repliedUser: false }
     });
   } catch (error) {
     console.error("Errore durante l'indicizzazione del canale:", error);
 
-    await message.reply({
-      content: 'Mi dispiace, non sono riuscito a indicizzare questo canale. Controlla i permessi del bot e riprova.',
-      allowedMentions: { repliedUser: false }
-    });
+    const errorMessage = error instanceof ChannelNotFetchableError
+      ? 'Questo canale non supporta il recupero dei messaggi storici.'
+      : 'Mi dispiace, non sono riuscito a indicizzare questo canale. Controlla che il bot abbia i permessi per vedere il canale e leggere la cronologia messaggi.';
+
+    try {
+      await message.reply({
+        content: errorMessage,
+        allowedMentions: { repliedUser: false }
+      });
+    } catch (replyError) {
+      console.error("Errore durante l'invio del messaggio di errore dell'indicizzazione:", replyError);
+    }
   }
 }
 

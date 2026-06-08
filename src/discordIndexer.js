@@ -2,37 +2,21 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 const DEFAULT_BATCH_SIZE = 100;
-const DEFAULT_BATCH_DELAY_MS = 1200;
+const DEFAULT_BATCH_DELAY_MS = 500;
+const DEFAULT_MAX_MESSAGES = 5000;
 const DEFAULT_MAX_RETRIES = 3;
+const LOG_EVERY_MESSAGES = 500;
 const DATA_DIR = path.join(process.cwd(), 'data');
+
+export class ChannelNotFetchableError extends Error {
+  constructor() {
+    super('Il canale selezionato non supporta il recupero dei messaggi.');
+    this.name = 'ChannelNotFetchableError';
+  }
+}
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function safeFileName(value) {
-  return String(value).replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
-function extractAttachments(message) {
-  return [...message.attachments.values()].map((attachment) => ({
-    fileName: attachment.name ?? null,
-    url: attachment.url,
-    contentType: attachment.contentType ?? null,
-    size: attachment.size
-  }));
-}
-
-function serializeMessage(message) {
-  return {
-    messageId: message.id,
-    channelId: message.channelId,
-    authorId: message.author?.id ?? null,
-    authorTag: message.author?.tag ?? 'utente sconosciuto',
-    createdAt: message.createdAt?.toISOString() ?? null,
-    content: message.content ?? '',
-    attachments: extractAttachments(message)
-  };
 }
 
 function getRetryDelay(error, fallbackDelayMs) {
@@ -43,6 +27,42 @@ function getRetryDelay(error, fallbackDelayMs) {
   }
 
   return fallbackDelayMs;
+}
+
+function getChannelName(channel) {
+  return channel.name ?? null;
+}
+
+function getGuildId(channel) {
+  return channel.guildId ?? channel.guild?.id ?? null;
+}
+
+function getOutputFilePath(channelId) {
+  return path.join(DATA_DIR, `channel_${channelId}.json`);
+}
+
+function extractAttachments(message) {
+  return [...message.attachments.values()].map((attachment) => ({
+    id: attachment.id,
+    name: attachment.name ?? null,
+    url: attachment.url,
+    contentType: attachment.contentType ?? null,
+    size: attachment.size
+  }));
+}
+
+function serializeMessage(message, channel) {
+  return {
+    messageId: message.id,
+    channelId: message.channelId,
+    channelName: getChannelName(channel),
+    guildId: getGuildId(channel),
+    authorId: message.author?.id ?? null,
+    authorTag: message.author?.tag ?? 'utente sconosciuto',
+    createdAt: message.createdAt?.toISOString() ?? null,
+    content: message.content ?? '',
+    attachments: extractAttachments(message)
+  };
 }
 
 async function fetchMessageBatch(channel, options, retryOptions) {
@@ -81,25 +101,25 @@ export async function indexChannelById(client, channelId, options = {}) {
 }
 
 export async function indexChannelMessages(channel, options = {}) {
-  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
+  const batchSize = DEFAULT_BATCH_SIZE;
   const batchDelayMs = options.batchDelayMs ?? DEFAULT_BATCH_DELAY_MS;
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const maxMessages = options.maxMessages ?? null;
+  const requestedMaxMessages = Number.parseInt(options.maxMessages ?? `${DEFAULT_MAX_MESSAGES}`, 10);
+  const maxMessages = Number.isFinite(requestedMaxMessages) && requestedMaxMessages > 0
+    ? requestedMaxMessages
+    : DEFAULT_MAX_MESSAGES;
 
   if (!channel?.messages?.fetch) {
-    throw new Error('Il canale selezionato non supporta il recupero dei messaggi.');
+    throw new ChannelNotFetchableError();
   }
 
   const messages = [];
-  let attachmentCount = 0;
+  let totalAttachments = 0;
   let before;
-  let keepFetching = true;
+  let lastLoggedCount = 0;
 
-  while (keepFetching) {
-    const fetchLimit = maxMessages ? Math.min(batchSize, maxMessages - messages.length) : batchSize;
-
-    if (fetchLimit <= 0) break;
-
+  while (messages.length < maxMessages) {
+    const fetchLimit = Math.min(batchSize, maxMessages - messages.length);
     const fetchOptions = { limit: fetchLimit };
     if (before) fetchOptions.before = before;
 
@@ -110,30 +130,38 @@ export async function indexChannelMessages(channel, options = {}) {
     const orderedMessages = [...batch.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
 
     for (const message of orderedMessages) {
-      const serialized = serializeMessage(message);
+      const serialized = serializeMessage(message, channel);
       messages.push(serialized);
-      attachmentCount += serialized.attachments.length;
+      totalAttachments += serialized.attachments.length;
     }
 
-    before = batch.last()?.id;
-    keepFetching = batch.size === fetchLimit;
+    const oldestMessage = [...batch.values()].reduce((oldest, message) => {
+      if (!oldest) return message;
+      return message.createdTimestamp < oldest.createdTimestamp ? message : oldest;
+    }, null);
+    before = oldestMessage?.id;
 
-    // Piccola pausa volontaria tra blocchi per non stressare le API Discord.
-    if (keepFetching) {
-      await wait(batchDelayMs);
+    if (!before || batch.size < fetchLimit) break;
+
+    if (messages.length - lastLoggedCount >= LOG_EVERY_MESSAGES) {
+      lastLoggedCount = messages.length;
+      console.log(`Indicizzazione canale ${channel.id}: ${messages.length} messaggi elaborati...`);
     }
+
+    // Piccola pausa volontaria tra blocchi per ridurre il rischio di rate limit Discord.
+    await wait(batchDelayMs);
   }
 
   await mkdir(DATA_DIR, { recursive: true });
 
-  const indexedAt = new Date().toISOString();
-  const filePath = path.join(DATA_DIR, `${safeFileName(channel.id)}.json`);
+  const filePath = getOutputFilePath(channel.id);
   const payload = {
+    indexedAt: new Date().toISOString(),
     channelId: channel.id,
-    channelName: channel.name ?? null,
-    indexedAt,
-    messageCount: messages.length,
-    attachmentCount,
+    channelName: getChannelName(channel),
+    guildId: getGuildId(channel),
+    totalMessages: messages.length,
+    totalAttachments,
     messages
   };
 
@@ -142,7 +170,7 @@ export async function indexChannelMessages(channel, options = {}) {
   return {
     channelId: channel.id,
     filePath,
-    messageCount: messages.length,
-    attachmentCount
+    totalMessages: messages.length,
+    totalAttachments
   };
 }

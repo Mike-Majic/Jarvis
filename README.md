@@ -57,6 +57,7 @@ Poi apri `.env` e inserisci i valori reali:
 DISCORD_TOKEN=il_token_del_tuo_bot_discord
 OPENAI_API_KEY=la_tua_chiave_openai
 OPENAI_MODEL=gpt-4.1-mini
+INDEX_MAX_MESSAGES=5000
 ```
 
 > Non committare mai il file `.env`: contiene segreti ed è già escluso da Git.
@@ -138,7 +139,7 @@ In futuro potrà essere sostituita o estesa con un database.
 
 ## Indicizzazione locale dei canali
 
-Jarvis include una prima struttura per indicizzare i messaggi del canale corrente in un archivio locale.
+Jarvis include una prima struttura per indicizzare lo storico del canale corrente in un archivio locale. Questa funzione serve a preparare una base dati JSON che in futuro potrà essere usata per ricerca, riassunti o ulteriori elaborazioni.
 
 ### Comando temporaneo per amministratori
 
@@ -148,34 +149,51 @@ Un amministratore del server può scrivere nel canale:
 Jarvis indicizza questo canale
 ```
 
-Jarvis recupererà i messaggi storici del canale a blocchi tramite l'API Discord e salverà un file JSON nella cartella `data/`.
+Jarvis recupererà i messaggi storici del canale a blocchi da 100 messaggi tramite l'API Discord e salverà un file JSON nella cartella `data/`.
 
-Al termine risponderà indicando:
+Il comando funziona solo se l'utente ha permessi amministratore. Al termine Jarvis risponderà indicando:
 
 - quanti messaggi sono stati salvati;
-- quanti allegati sono stati trovati.
+- quanti allegati sono stati trovati;
+- il percorso del file JSON creato.
 
 ### Dati salvati
 
 Per ogni canale viene creato un file:
 
 ```text
-data/<channelId>.json
+data/channel_<channelId>.json
 ```
 
 Per ogni messaggio vengono salvati solo testo e metadati:
 
 - `messageId`
 - `channelId`
+- `channelName`
+- `guildId`
 - `authorId`
 - `authorTag`
 - `createdAt`
 - `content`
 - `attachments`, con:
+  - ID;
   - nome file;
   - URL;
   - content type;
   - dimensione.
+
+
+### Limite massimo di sicurezza
+
+Per evitare scansioni troppo grandi o loop indesiderati, Jarvis usa un limite massimo di messaggi indicizzabili per singolo comando.
+
+Nel file `.env` puoi configurarlo così:
+
+```env
+INDEX_MAX_MESSAGES=5000
+```
+
+Se la variabile non è presente o non è valida, Jarvis usa `5000` come valore predefinito.
 
 ### Limiti attuali dell'indicizzazione
 
