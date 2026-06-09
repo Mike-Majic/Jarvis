@@ -141,6 +141,18 @@ La memoria è volutamente semplice:
 In futuro potrà essere sostituita o estesa con un database.
 
 
+
+## Diagnostica Discord
+
+Jarvis registra log con data e ora ISO per aiutare a capire eventuali disconnessioni su Render Free.
+
+Vengono tracciati:
+
+- avvio del client Discord;
+- errori e avvisi del client;
+- disconnessioni, riconnessioni, resume ed errori degli shard;
+- heartbeat ogni 60 secondi con `client.ws.status`, ping e user tag disponibile.
+
 ## Health check per Render
 
 Per funzionare come **Render Web Service**, Jarvis avvia anche un piccolo server HTTP interno usando solo moduli Node.js nativi.

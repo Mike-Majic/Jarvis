@@ -10,15 +10,31 @@ import {
   reindexChannelById
 } from './src/discordIndexer.js';
 
+function formatLogPrefix(scope) {
+  return `[${new Date().toISOString()}] [${scope}]`;
+}
+
+function logInfo(scope, message, ...details) {
+  console.log(`${formatLogPrefix(scope)} ${message}`, ...details);
+}
+
+function logWarn(scope, message, ...details) {
+  console.warn(`${formatLogPrefix(scope)} ${message}`, ...details);
+}
+
+function logError(scope, message, ...details) {
+  console.error(`${formatLogPrefix(scope)} ${message}`, ...details);
+}
+
 const { DISCORD_TOKEN, GEMINI_API_KEY, GEMINI_MODEL = 'gemini-2.5-flash' } = process.env;
 
 if (!DISCORD_TOKEN) {
-  console.error('Errore: DISCORD_TOKEN non è configurato nel file .env');
+  logError('config', 'Errore: DISCORD_TOKEN non è configurato nel file .env');
   process.exit(1);
 }
 
 if (!GEMINI_API_KEY) {
-  console.error('Errore: GEMINI_API_KEY non è configurato nel file .env');
+  logError('config', 'Errore: GEMINI_API_KEY non è configurato nel file .env');
   process.exit(1);
 }
 
@@ -50,6 +66,7 @@ const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX
   : DEFAULT_INDEX_MAX_MESSAGES;
 const RAW_PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
 const PORT = Number.isFinite(RAW_PORT) && RAW_PORT > 0 ? RAW_PORT : 3000;
+const DISCORD_DIAGNOSTICS_INTERVAL_MS = 60_000;
 
 function startHealthServer() {
   const server = createServer((request, response) => {
@@ -72,7 +89,7 @@ function startHealthServer() {
   });
 
   server.listen(PORT, () => {
-    console.log(`Health server in ascolto sulla porta ${PORT}`);
+    logInfo('health', `Health server in ascolto sulla porta ${PORT}`);
   });
 }
 
@@ -149,7 +166,7 @@ async function handleIndexChannelCommand(message) {
       allowedMentions: { repliedUser: false }
     });
   } catch (error) {
-    console.error("Errore durante l'indicizzazione del canale:", error);
+    logError('archive:index', "Errore durante l'indicizzazione del canale:", error);
 
     try {
       await message.reply({
@@ -157,7 +174,7 @@ async function handleIndexChannelCommand(message) {
         allowedMentions: { repliedUser: false }
       });
     } catch (replyError) {
-      console.error("Errore durante l'invio del messaggio di errore dell'indicizzazione:", replyError);
+      logError('archive:index', "Errore durante l'invio del messaggio di errore dell'indicizzazione:", replyError);
     }
   }
 }
@@ -191,7 +208,7 @@ async function handleArchiveStatusCommand(message) {
 
     await replyWithChunks(message, lines.join('\n'));
   } catch (error) {
-    console.error("Errore durante la lettura dello stato dell'archivio:", error);
+    logError('archive:status', "Errore durante la lettura dello stato dell'archivio:", error);
     await message.reply({
       content: "Non sono riuscito a leggere lo stato dell'archivio locale. Controlla i log del bot.",
       allowedMentions: { repliedUser: false }
@@ -218,7 +235,7 @@ async function handleDeleteChannelArchiveCommand(message) {
       allowedMentions: { repliedUser: false }
     });
   } catch (error) {
-    console.error("Errore durante la cancellazione dell'archivio del canale:", error);
+    logError('archive:delete', "Errore durante la cancellazione dell'archivio del canale:", error);
     await message.reply({
       content: "Errore durante la cancellazione dell'archivio del canale. Controlla i log del bot.",
       allowedMentions: { repliedUser: false }
@@ -244,7 +261,7 @@ async function handleReindexChannelCommand(message) {
       allowedMentions: { repliedUser: false }
     });
   } catch (error) {
-    console.error('Errore durante la reindicizzazione del canale:', error);
+    logError('archive:reindex', 'Errore durante la reindicizzazione del canale:', error);
 
     try {
       await message.reply({
@@ -252,7 +269,7 @@ async function handleReindexChannelCommand(message) {
         allowedMentions: { repliedUser: false }
       });
     } catch (replyError) {
-      console.error("Errore durante l'invio del messaggio di errore della reindicizzazione:", replyError);
+      logError('archive:reindex', "Errore durante l'invio del messaggio di errore della reindicizzazione:", replyError);
     }
   }
 }
@@ -386,17 +403,54 @@ async function askGemini(channelId, prompt) {
     return response.text?.trim() || 'Mi dispiace, non sono riuscito a generare una risposta.';
   } catch (error) {
     if (isGeminiQuotaOrApiKeyError(error)) {
-      console.error('Errore Gemini API key/quota:', error);
+      logError('gemini', 'Errore Gemini API key/quota:', error);
     } else {
-      console.error('Errore durante la chiamata a Gemini:', error);
+      logError('gemini', 'Errore durante la chiamata a Gemini:', error);
     }
 
     throw error;
   }
 }
 
+function startDiscordDiagnostics() {
+  setInterval(() => {
+    logInfo(
+      'discord:heartbeat',
+      `client.ws.status=${client.ws.status} ping=${client.ws.ping} user=${client.user?.tag ?? 'non disponibile'}`
+    );
+  }, DISCORD_DIAGNOSTICS_INTERVAL_MS);
+}
+
 client.once(Events.ClientReady, (readyClient) => {
-  console.log(`Jarvis è online come ${readyClient.user.tag}`);
+  logInfo('discord:ready', `Jarvis è online come ${readyClient.user.tag}`);
+  startDiscordDiagnostics();
+});
+
+client.on('error', (error) => {
+  logError('discord:error', 'Errore client Discord:', error);
+});
+
+client.on('warn', (warning) => {
+  logWarn('discord:warn', 'Avviso client Discord:', warning);
+});
+
+client.on('shardDisconnect', (closeEvent, shardId) => {
+  logWarn(
+    'discord:shardDisconnect',
+    `Shard ${shardId} disconnesso. code=${closeEvent?.code ?? 'n/a'} reason=${closeEvent?.reason ?? 'n/a'}`
+  );
+});
+
+client.on('shardReconnecting', (shardId) => {
+  logWarn('discord:shardReconnecting', `Shard ${shardId} in riconnessione...`);
+});
+
+client.on('shardResume', (shardId, replayedEvents) => {
+  logInfo('discord:shardResume', `Shard ${shardId} ripristinato. eventi riprodotti=${replayedEvents}`);
+});
+
+client.on('shardError', (error, shardId) => {
+  logError('discord:shardError', `Errore shard ${shardId}:`, error);
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -424,7 +478,7 @@ client.on(Events.MessageCreate, async (message) => {
       await message.reply({ content: chunk, allowedMentions: { repliedUser: false } });
     }
   } catch (error) {
-    console.error('Errore durante la gestione del messaggio:', error);
+    logError('discord:message', 'Errore durante la gestione del messaggio:', error);
 
     try {
       await message.reply({
@@ -432,7 +486,7 @@ client.on(Events.MessageCreate, async (message) => {
         allowedMentions: { repliedUser: false }
       });
     } catch (replyError) {
-      console.error('Errore durante l\'invio del messaggio di errore:', replyError);
+      logError('discord:message', 'Errore durante l\'invio del messaggio di errore:', replyError);
     }
   }
 });
@@ -440,6 +494,6 @@ client.on(Events.MessageCreate, async (message) => {
 startHealthServer();
 
 client.login(DISCORD_TOKEN).catch((error) => {
-  console.error('Errore durante il login del bot Discord:', error);
+  logError('discord:login', 'Errore durante il login del bot Discord:', error);
   process.exit(1);
 });

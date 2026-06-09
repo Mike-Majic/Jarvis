@@ -8,6 +8,19 @@ const DEFAULT_MAX_RETRIES = 3;
 const LOG_EVERY_MESSAGES = 500;
 const DATA_DIR = path.join(process.cwd(), 'data');
 
+
+function formatLogPrefix(scope) {
+  return `[${new Date().toISOString()}] [${scope}]`;
+}
+
+function logInfo(scope, message, ...details) {
+  console.log(`${formatLogPrefix(scope)} ${message}`, ...details);
+}
+
+function logWarn(scope, message, ...details) {
+  console.warn(`${formatLogPrefix(scope)} ${message}`, ...details);
+}
+
 export class ChannelNotFetchableError extends Error {
   constructor() {
     super('Il canale selezionato non supporta il recupero dei messaggi.');
@@ -83,7 +96,8 @@ async function fetchMessageBatch(channel, options, retryOptions) {
       }
 
       const retryDelayMs = getRetryDelay(error, retryOptions.batchDelayMs * attempt);
-      console.warn(
+      logWarn(
+        'indexer:fetch',
         `Errore durante il recupero dei messaggi del canale ${channel.id}. Riprovo tra ${retryDelayMs} ms...`,
         error
       );
@@ -122,7 +136,7 @@ export async function getArchiveStatus() {
           indexedAt: data.indexedAt ?? null
         });
       } catch (error) {
-        console.warn(`Archivio ${fileName} non leggibile o non valido:`, error);
+        logWarn('indexer:archive', `Archivio ${fileName} non leggibile o non valido:`, error);
         channels.push({
           fileName,
           filePath,
@@ -228,7 +242,7 @@ export async function indexChannelMessages(channel, options = {}) {
 
     if (messages.length - lastLoggedCount >= LOG_EVERY_MESSAGES) {
       lastLoggedCount = messages.length;
-      console.log(`Indicizzazione canale ${channel.id}: ${messages.length} messaggi elaborati...`);
+      logInfo('indexer:progress', `Indicizzazione canale ${channel.id}: ${messages.length} messaggi elaborati...`);
     }
 
     // Piccola pausa volontaria tra blocchi per ridurre il rischio di rate limit Discord.
