@@ -30,7 +30,7 @@ function normalizeText(value) {
 }
 
 function getTavilyApiKey() {
-  return process.env.TAVILY_API_KEY;
+  return process.env.TAVILY_API_KEY?.trim();
 }
 
 function assertConfigured() {
@@ -118,8 +118,23 @@ export async function searchWeb(query, options = {}) {
       sources: results.map((result) => ({ title: result.title, url: result.url })).filter((source) => source.url)
     };
   } catch (error) {
-    logError('webSearch:error', error?.stack ?? error);
-    throw error;
+    const message = error?.message ?? String(error);
+    const stack = error?.stack ?? 'stack non disponibile';
+    logError('webSearch:error', `message=${message}`, `stack=${stack}`);
+
+    if (error instanceof WebSearchConfigError) {
+      throw error;
+    }
+
+    return {
+      provider: 'tavily',
+      query,
+      answer: null,
+      responseText: 'Non riesco a fare la ricerca online in questo momento. Controlla TAVILY_API_KEY o i log Render.',
+      results: [],
+      sources: [],
+      error: true
+    };
   }
 }
 

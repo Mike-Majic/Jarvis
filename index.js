@@ -684,6 +684,15 @@ async function buildPromptWithWebContext(prompt, originalPrompt, options = {}) {
   try {
     const search = await searchWeb(originalPrompt, { maxResults: 5 });
 
+    if (search.error) {
+      return {
+        prompt,
+        usedWeb: true,
+        webHadResults: false,
+        webSearchFailed: true
+      };
+    }
+
     if (search.results.length === 0) {
       return {
         prompt: `DOMANDA UTENTE:
@@ -730,7 +739,7 @@ ISTRUZIONI WEB:
       };
     }
 
-    logError('webSearch:error', 'Errore durante la ricerca online:', error?.stack ?? error);
+    logErrorWithStack('webSearch:error', 'Errore durante la ricerca online:', error);
     return {
       prompt: `DOMANDA UTENTE:
 ${originalPrompt}
@@ -765,6 +774,10 @@ async function askGemini(channelId, prompt) {
 
   if (webPrompt.webConfigMissing) {
     return 'La ricerca online non è ancora configurata. Serve impostare la chiave API su Render.';
+  }
+
+  if (webPrompt.webSearchFailed) {
+    return 'Non riesco a fare la ricerca online in questo momento. Controlla TAVILY_API_KEY o i log Render.';
   }
 
   try {
