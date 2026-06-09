@@ -245,7 +245,7 @@ Esempio:
 Jarvis il colore viola della fibra, che numero è?
 ```
 
-Prima di chiamare Gemini, Jarvis cerca nei file `data/channel_*.json`; se trova messaggi pertinenti, aggiunge un blocco di contesto alla richiesta inviata a Gemini. Se non trova nulla, continua a rispondere normalmente senza contesto locale.
+Prima di chiamare Gemini, Jarvis cerca nei file `data/channel_*.json`; se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; se la domanda riguarda procedure, numerazioni o storico e il contesto non contiene la risposta, deve dire che non trova la risposta nell'archivio.
 
 Puoi anche interrogare direttamente l'archivio senza usare Gemini:
 
@@ -254,6 +254,8 @@ Jarvis cerca archivio viola
 ```
 
 Questo comando restituisce risultati grezzi trovati nei JSON locali, includendo canale, data, contenuto del messaggio e metadati degli allegati se presenti.
+
+La ricerca è keyword based e riconosce meglio domande su colori, fibra e numerazioni; per le liste numerate multilinea include tutto il contenuto del messaggio indicizzato nel contesto.
 
 Se `data/` non esiste o non contiene file `channel_*.json`, Jarvis risponde:
 

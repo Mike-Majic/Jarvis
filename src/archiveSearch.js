@@ -2,7 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 
 const DATA_DIR = path.join(process.cwd(), 'data');
-const MAX_RESULTS = 5;
+const MAX_RESULTS = 10;
 const STOP_WORDS = new Set([
   'jarvis',
   'il',
@@ -18,8 +18,6 @@ const STOP_WORDS = new Set([
   'come',
   'dove',
   'quando',
-  'numero',
-  'colore',
   'della',
   'del',
   'di',
@@ -27,6 +25,39 @@ const STOP_WORDS = new Set([
   'e',
   'o'
 ]);
+const ARCHIVE_DOMAIN_WORDS = new Set([
+  'colori',
+  'colore',
+  'fibra',
+  'numerazione',
+  'numero',
+  'rosso',
+  'verde',
+  'giallo',
+  'blu',
+  'bianco',
+  'viola',
+  'arancione',
+  'nero',
+  'grigio',
+  'marrone',
+  'rosa',
+  'turchese'
+]);
+const COLOR_WORDS = [
+  'rosso',
+  'verde',
+  'giallo',
+  'blu',
+  'bianco',
+  'viola',
+  'arancione',
+  'nero',
+  'grigio',
+  'marrone',
+  'rosa',
+  'turchese'
+];
 
 function normalizeText(value) {
   return String(value ?? '')
@@ -35,11 +66,28 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
-function extractUsefulWords(query) {
-  const normalized = normalizeText(query);
-  const words = normalized.match(/[a-z0-9]+/g) ?? [];
+function extractWords(value) {
+  return normalizeText(value).match(/[a-z0-9]+/g) ?? [];
+}
 
-  return [...new Set(words.filter((word) => word.length > 1 && !STOP_WORDS.has(word)))];
+function hasArchiveDomainWord(words) {
+  return words.some((word) => ARCHIVE_DOMAIN_WORDS.has(word));
+}
+
+function expandDomainWords(words) {
+  if (!hasArchiveDomainWord(words)) return words;
+
+  // Se la domanda riguarda colori/fibra/numerazioni, cerchiamo anche i termini
+  // tipici delle tabelle colori: spesso il messaggio indicizzato contiene solo
+  // la lista completa e non tutte le parole della domanda dell'utente.
+  return [...words, 'colori', 'colore', 'fibra', 'numerazione', 'numero', ...COLOR_WORDS];
+}
+
+function extractUsefulWords(query) {
+  const words = extractWords(query);
+  const usefulWords = words.filter((word) => word.length > 1 && !STOP_WORDS.has(word));
+
+  return [...new Set(expandDomainWords(usefulWords))];
 }
 
 async function readArchiveFiles() {
@@ -57,9 +105,41 @@ async function readArchiveFiles() {
   }
 }
 
-function getMessageScore(message, usefulWords) {
+function containsNumberedMultilineList(content) {
+  const numberedLines = String(content ?? '')
+    .split('\n')
+    .filter((line) => /^\s*\d+\s*[-.)]?\s+\S+/.test(line));
+
+  return numberedLines.length >= 2;
+}
+
+function containsColorNumberedList(content) {
+  const normalized = normalizeText(content);
+  return COLOR_WORDS.some((color) => new RegExp(`(^|\\n)\\s*\\d+\\s*[-.)]?\\s+${color}\\b`, 'i').test(normalized));
+}
+
+function getMessageScore(message, usefulWords, originalWords) {
   const content = normalizeText(message.content);
-  return usefulWords.filter((word) => content.includes(word)).length;
+  const matchedWords = usefulWords.filter((word) => content.includes(word));
+  let score = matchedWords.length;
+
+  if (score > 0 && containsNumberedMultilineList(message.content)) {
+    score += 2;
+  }
+
+  if (hasArchiveDomainWord(originalWords) && containsColorNumberedList(message.content)) {
+    score += 4;
+  }
+
+  // Se l'utente chiede un colore specifico e il messaggio contiene una riga
+  // numerata con quel colore, questo risultato deve avere priorità alta.
+  for (const color of COLOR_WORDS) {
+    if (originalWords.includes(color) && new RegExp(`(^|\\n)\\s*\\d+\\s*[-.)]?\\s+${color}\\b`, 'i').test(content)) {
+      score += 8;
+    }
+  }
+
+  return score;
 }
 
 function toSearchResult(message, archiveData, score) {
@@ -74,6 +154,7 @@ function toSearchResult(message, archiveData, score) {
 
 export async function searchArchive(query, options = {}) {
   const maxResults = options.maxResults ?? MAX_RESULTS;
+  const originalWords = extractWords(query);
   const usefulWords = extractUsefulWords(query);
 
   if (usefulWords.length === 0) {
@@ -95,7 +176,7 @@ export async function searchArchive(query, options = {}) {
     const messages = Array.isArray(archiveData.messages) ? archiveData.messages : [];
 
     for (const message of messages) {
-      const score = getMessageScore(message, usefulWords);
+      const score = getMessageScore(message, usefulWords, originalWords);
 
       if (score > 0) {
         matches.push(toSearchResult(message, archiveData, score));
@@ -136,6 +217,6 @@ export function formatArchiveResultsForGemini(results) {
       ? `\nAllegati: ${JSON.stringify(result.attachments)}`
       : '';
 
-    return `[Risultato ${index + 1}] Canale: #${result.channelName}\nData: ${result.createdAt ?? 'non disponibile'}\nContenuto:\n${result.content}${attachments}`;
+    return `[Risultato ${index + 1}]\nNome canale: #${result.channelName}\nData messaggio: ${result.createdAt ?? 'non disponibile'}\nContenuto completo del messaggio:\n${result.content}${attachments}`;
   }).join('\n\n');
 }

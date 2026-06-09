@@ -451,12 +451,17 @@ async function buildPromptWithArchiveContext(prompt) {
     }
 
     const context = formatArchiveResultsForGemini(search.results);
-    return `${prompt}
+    return `DOMANDA UTENTE:
+${prompt}
 
-Contesto trovato nell'archivio Discord:
+CONTENUTO ARCHIVIO DISCORD
 ${context}
 
-Usa il contesto sopra se è pertinente alla domanda. Se il contesto contiene la risposta, rispondi in modo diretto e sintetico.`;
+ISTRUZIONI:
+- Usa SOLO il CONTENUTO ARCHIVIO DISCORD per rispondere se è pertinente alla domanda.
+- Se il contenuto archivio contiene la risposta, rispondi in modo diretto usando quei dati.
+- Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e il contenuto archivio non contiene la risposta, di' che non trovi la risposta nell'archivio.
+- Non usare conoscenza generale se contraddice o sostituisce l'archivio.`;
   } catch (error) {
     logError('archive:search', "Errore durante la ricerca del contesto nell'archivio:", error);
     return prompt;
@@ -473,7 +478,7 @@ async function askGemini(channelId, prompt) {
       contents: convertHistoryToGeminiContents(history, promptWithArchiveContext),
       config: {
         systemInstruction:
-          'Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico e utile. Se non sai qualcosa, dillo chiaramente e chiedi dettagli.',
+          `Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico e utile. Se è presente un blocco CONTENUTO ARCHIVIO DISCORD, devi dare priorità assoluta a quello. Non usare conoscenza generale se contraddice l'archivio. Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e l'archivio ha risultati, rispondi solo con i dati trovati. Se il contesto non contiene la risposta, di' chiaramente che non trovi la risposta nell'archivio.`,
         temperature: 0.4
       }
     });
