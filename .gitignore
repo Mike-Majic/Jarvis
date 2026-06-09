@@ -26,5 +26,5 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Archivio locale generato dall'indicizzazione Discord
+# Eventuale archivio locale temporaneo/legacy generato dall'indicizzazione Discord
 data/

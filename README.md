@@ -17,6 +17,8 @@ Non usa comandi slash: gli utenti possono scrivere normalmente nel canale, ad es
 - Usa Gemini API per generare risposte.
 - Risponde sempre in italiano.
 - Mantiene una piccola memoria conversazionale per canale, salvata solo in RAM.
+- Indicizza messaggi e metadati degli allegati su Supabase nella tabella `discord_messages`.
+- Cerca nello storico Supabase per usare i risultati come contesto nelle domande tecniche.
 - Divide automaticamente le risposte troppo lunghe in più messaggi compatibili con Discord.
 - Gestisce gli errori senza far crashare il processo.
 
@@ -24,19 +26,17 @@ Non usa comandi slash: gli utenti possono scrivere normalmente nel canale, ad es
 
 Questa è una base funzionante. Per ora Jarvis **non**:
 
-- indicizza due anni di messaggi Discord;
-- usa un database;
-- si collega a Supabase;
+- scarica o legge allegati come PDF, Excel, Word o immagini;
 - usa comandi slash.
 
 ## Requisiti
 
-Jarvis usa il pacchetto ufficiale `@google/genai` per comunicare con Gemini API.
-
+Jarvis usa il pacchetto ufficiale `@google/genai` per comunicare con Gemini API e `@supabase/supabase-js` per salvare/cercare lo storico Discord su Supabase.
 
 - Node.js 18 o superiore.
 - Un bot Discord creato nel [Discord Developer Portal](https://discord.com/developers/applications).
 - Una chiave API Gemini.
+- Un progetto Supabase con la tabella `discord_messages` già creata.
 
 ## Installazione
 
@@ -60,6 +60,8 @@ Poi apri `.env` e inserisci i valori reali:
 DISCORD_TOKEN=il_token_del_tuo_bot_discord
 GEMINI_API_KEY=la_tua_chiave_gemini
 GEMINI_MODEL=gemini-2.5-flash
+SUPABASE_URL=https://il-tuo-progetto.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=la_tua_service_role_key
 INDEX_MAX_MESSAGES=5000
 ```
 
@@ -124,9 +126,13 @@ Jarvis risponderà nel canale usando Gemini API.
 .
 ├── .env.example     # Esempio delle variabili d'ambiente richieste
 ├── .gitignore       # File e cartelle da non committare
-├── index.js         # File principale del bot
-├── package.json     # Configurazione Node.js e script npm
-└── README.md        # Istruzioni del progetto
+├── index.js              # File principale del bot
+├── package.json          # Configurazione Node.js e script npm
+├── src/
+│   ├── archiveSearch.js  # Ricerca nello storico Supabase
+│   ├── discordIndexer.js # Indicizzazione Discord su Supabase
+│   └── supabaseClient.js # Client Supabase lato server
+└── README.md             # Istruzioni del progetto
 ```
 
 ## Note sulla memoria conversazionale
@@ -165,9 +171,9 @@ Endpoint disponibili:
 
 La porta viene letta da `PORT`, impostata automaticamente da Render, con fallback locale a `3000`.
 
-## Indicizzazione locale dei canali
+## Indicizzazione dei canali su Supabase
 
-Jarvis include una prima struttura per indicizzare lo storico del canale corrente in un archivio locale. Questa funzione serve a preparare una base dati JSON che in futuro potrà essere usata per ricerca, riassunti o ulteriori elaborazioni.
+Jarvis indicizza lo storico del canale corrente su Supabase, nella tabella `discord_messages`. Render Free non offre storage persistente affidabile, quindi la cartella `data/` non viene più usata come archivio principale.
 
 ### Comandi temporanei per amministratori
 
@@ -179,21 +185,21 @@ Per indicizzare il canale corrente scrivi:
 Jarvis indicizza questo canale
 ```
 
-Jarvis recupererà i messaggi storici del canale a blocchi da 100 messaggi tramite l'API Discord e salverà un file JSON nella cartella `data/`. Al termine risponderà indicando:
+Jarvis recupererà i messaggi storici del canale a blocchi da 100 messaggi tramite l'API Discord e salverà ogni messaggio come riga in Supabase. Usa `upsert` su `message_id`, così rilanciare l'indicizzazione dello stesso messaggio non crea duplicati. Al termine risponderà indicando:
 
 - quanti messaggi sono stati salvati;
 - quanti allegati sono stati trovati;
-- il percorso del file JSON creato.
+- che i dati sono stati salvati su Supabase.
 
-Per controllare cosa è già stato salvato nell'archivio locale scrivi:
+Per controllare cosa è già stato salvato nell'archivio Supabase scrivi:
 
 ```text
 Jarvis stato archivio
 ```
 
-Jarvis risponderà con il numero di file `channel_*.json` presenti e, per ogni canale indicizzato, mostrerà nome canale, messaggi salvati, allegati trovati e data dell'ultima indicizzazione.
+Jarvis risponderà con numero totale di canali indicizzati, totale messaggi, totale allegati e, per ogni canale, server, nome canale, `channel_id`, messaggi salvati, allegati trovati e data dell'ultima indicizzazione.
 
-Per cercare direttamente nei JSON locali senza Gemini scrivi:
+Per cercare direttamente su Supabase senza Gemini scrivi:
 
 ```text
 Jarvis cerca archivio <testo>
@@ -211,13 +217,13 @@ Esempio:
 Jarvis cerca archivio viola
 ```
 
-Per cancellare solo l'archivio JSON del canale corrente scrivi:
+Per cancellare solo le righe Supabase del canale corrente scrivi:
 
 ```text
 Jarvis cancella archivio questo canale
 ```
 
-Il comando elimina solo `data/channel_<channelId>.json` del canale corrente. Non chiede conferma e risponde se il file è stato cancellato, se non era presente o se si è verificato un errore.
+Il comando elimina solo le righe della tabella `discord_messages` con `channel_id` uguale al canale corrente. Non cancella altri canali e non chiede conferma.
 
 Per cancellare e ricreare l'archivio del canale corrente scrivi:
 
@@ -225,7 +231,7 @@ Per cancellare e ricreare l'archivio del canale corrente scrivi:
 Jarvis reindicizza questo canale
 ```
 
-Jarvis rimuove il vecchio JSON del canale corrente, se esiste, poi rilancia l'indicizzazione e risponde con messaggi salvati, allegati trovati e percorso del file creato.
+Jarvis cancella da Supabase solo le righe del canale corrente, poi rilancia l'indicizzazione e risponde con righe cancellate, messaggi salvati e allegati trovati.
 
 
 ### Procedura operativa consigliata - fase A
@@ -234,16 +240,16 @@ Per preparare lo storico prima di costruire la ricerca:
 
 1. Entra nel canale dedicato alle procedure.
 2. Scrivi `Jarvis indicizza questo canale`.
-3. Attendi il messaggio di completamento con numero messaggi, allegati e percorso file.
+3. Attendi il messaggio di completamento con numero messaggi e allegati salvati su Supabase.
 4. Ripeti la stessa operazione nei canali importanti, ad esempio storico, interventi e numeri.
 5. Scrivi `Jarvis stato archivio` per controllare quali canali sono stati salvati e quando sono stati indicizzati.
 6. Prova una ricerca diretta, ad esempio `Jarvis cerca archivio viola`.
 7. Se vuoi rifare un canale, entra in quel canale e scrivi `Jarvis reindicizza questo canale`.
 
 
-## Ricerca nell'archivio locale
+## Ricerca nell'archivio Supabase
 
-Dopo aver indicizzato uno o più canali, Jarvis può usare i file JSON locali in `data/` come contesto, ma solo quando la domanda sembra davvero legata a dati operativi, procedure, storico, numerazioni o ricerca tecnica.
+Dopo aver indicizzato uno o più canali, Jarvis può usare le righe Supabase della tabella `discord_messages` come contesto, ma solo quando la domanda sembra davvero legata a dati operativi, procedure, storico, numerazioni o ricerca tecnica.
 
 Esempio:
 
@@ -251,7 +257,7 @@ Esempio:
 Jarvis il colore viola della fibra, che numero è?
 ```
 
-Per le domande tecniche Jarvis cerca nei file `data/channel_*.json` prima di chiamare Gemini; se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; se la domanda è chiaramente tecnica e l'archivio non contiene risultati, può rispondere che non trova l'informazione nell'archivio.
+Per le domande tecniche Jarvis cerca su Supabase nella colonna `content` prima di chiamare Gemini; se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; se la domanda è chiaramente tecnica e l'archivio non contiene risultati, può rispondere che non trova l'informazione nell'archivio.
 
 Per i messaggi normali, ad esempio `Jarvis fa caldo`, `Jarvis come stai`, `Jarvis annamo bene` o battute/sfottò, Jarvis non cerca nell'archivio e risponde in modo naturale con Gemini o con risposte personalizzate.
 
@@ -267,11 +273,11 @@ oppure:
 Jarvis verifica archivio viola
 ```
 
-Questo comando restituisce risultati grezzi trovati nei JSON locali, includendo canale, data, contenuto del messaggio e metadati degli allegati se presenti.
+Questo comando restituisce risultati grezzi trovati su Supabase, includendo server, canale, data, contenuto del messaggio e metadati degli allegati se presenti.
 
-La ricerca è keyword based e riconosce meglio domande su colori, fibra e numerazioni; per le liste numerate multilinea include tutto il contenuto del messaggio indicizzato nel contesto.
+La ricerca è keyword based, case-insensitive e supporta anche codici brevi o alfanumerici come `A24`, `A14`, `DR` e `KO`. Riconosce meglio domande su colori, fibra e numerazioni; per le liste numerate multilinea include tutto il contenuto del messaggio indicizzato nel contesto.
 
-Se `data/` non esiste o non contiene file `channel_*.json`, Jarvis risponde:
+Se Supabase non contiene ancora righe indicizzate, Jarvis risponde:
 
 ```text
 Archivio vuoto. Prima indicizza almeno un canale.
@@ -285,28 +291,21 @@ Non ho trovato risultati nell'archivio.
 
 ### Dati salvati
 
-Per ogni canale viene creato un file:
+Per ogni messaggio Jarvis salva una riga nella tabella Supabase `discord_messages` con testo e metadati:
 
-```text
-data/channel_<channelId>.json
-```
-
-Per ogni messaggio vengono salvati solo testo e metadati:
-
-- `messageId`
-- `channelId`
-- `channelName`
-- `guildId`
-- `authorId`
-- `authorTag`
-- `createdAt`
+- `guild_id`
+- `guild_name`
+- `channel_id`
+- `channel_name`
+- `message_id`
+- `author_id`
+- `author_tag`
+- `created_at`
 - `content`
-- `attachments`, con:
-  - ID;
-  - nome file;
-  - URL;
-  - content type;
-  - dimensione.
+- `attachments`, come array JSON con ID, nome file, URL, content type e dimensione;
+- `indexed_at`.
+
+Ogni canale resta separato tramite `channel_id` e ogni server tramite `guild_id`.
 
 ### Limite massimo di sicurezza
 
@@ -326,8 +325,8 @@ Per ora Jarvis:
 
 - non scarica gli allegati;
 - non legge PDF, Excel o Word;
-- non usa database;
-- invia a Gemini solo piccoli estratti testuali dei JSON quando una domanda tecnica trova risultati pertinenti;
-- salva solo un archivio JSON locale per canale.
+- non usa più `data/` come archivio principale;
+- invia a Gemini solo piccoli estratti testuali recuperati da Supabase quando una domanda tecnica trova risultati pertinenti;
+- salva lo storico indicizzato su Supabase nella tabella `discord_messages`.
 
 La scansione usa pause tra i blocchi e tentativi automatici in caso di errori temporanei o rate limit.

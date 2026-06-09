@@ -1,13 +1,13 @@
-import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import { getSupabaseClient, SupabaseConfigError } from './supabaseClient.js';
 
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_BATCH_DELAY_MS = 500;
 const DEFAULT_MAX_MESSAGES = 5000;
 const DEFAULT_MAX_RETRIES = 3;
 const LOG_EVERY_MESSAGES = 500;
-const DATA_DIR = path.join(process.cwd(), 'data');
-
+const SUPABASE_TABLE = 'discord_messages';
+const SUPABASE_UPSERT_CHUNK_SIZE = 500;
+const SUPABASE_READ_PAGE_SIZE = 1000;
 
 function formatLogPrefix(scope) {
   return `[${new Date().toISOString()}] [${scope}]`;
@@ -50,12 +50,12 @@ function getGuildId(channel) {
   return channel.guildId ?? channel.guild?.id ?? null;
 }
 
-export function getChannelArchiveFilePath(channelId) {
-  return getOutputFilePath(channelId);
+function getGuildName(channel) {
+  return channel.guild?.name ?? null;
 }
 
-function getOutputFilePath(channelId) {
-  return path.join(DATA_DIR, `channel_${channelId}.json`);
+export function getChannelArchiveFilePath(channelId) {
+  return `Supabase:${SUPABASE_TABLE}:channel_id=${channelId}`;
 }
 
 function extractAttachments(message) {
@@ -68,17 +68,19 @@ function extractAttachments(message) {
   }));
 }
 
-function serializeMessage(message, channel) {
+function serializeMessage(message, channel, indexedAt) {
   return {
-    messageId: message.id,
-    channelId: message.channelId,
-    channelName: getChannelName(channel),
-    guildId: getGuildId(channel),
-    authorId: message.author?.id ?? null,
-    authorTag: message.author?.tag ?? 'utente sconosciuto',
-    createdAt: message.createdAt?.toISOString() ?? null,
+    guild_id: getGuildId(channel),
+    guild_name: getGuildName(channel),
+    channel_id: message.channelId,
+    channel_name: getChannelName(channel),
+    message_id: message.id,
+    author_id: message.author?.id ?? null,
+    author_tag: message.author?.tag ?? 'utente sconosciuto',
+    created_at: message.createdAt?.toISOString() ?? null,
     content: message.content ?? '',
-    attachments: extractAttachments(message)
+    attachments: extractAttachments(message),
+    indexed_at: indexedAt
   };
 }
 
@@ -108,73 +110,121 @@ async function fetchMessageBatch(channel, options, retryOptions) {
   return new Map();
 }
 
+async function upsertRows(rows) {
+  if (rows.length === 0) return;
 
-export async function getArchiveStatus() {
-  try {
-    await mkdir(DATA_DIR, { recursive: true });
-    const fileNames = await readdir(DATA_DIR);
-    const channelFiles = fileNames
-      .filter((fileName) => /^channel_\d+\.json$/.test(fileName))
-      .sort();
+  const supabase = getSupabaseClient();
 
-    const channels = [];
+  for (let index = 0; index < rows.length; index += SUPABASE_UPSERT_CHUNK_SIZE) {
+    const chunk = rows.slice(index, index + SUPABASE_UPSERT_CHUNK_SIZE);
+    const { error } = await supabase
+      .from(SUPABASE_TABLE)
+      .upsert(chunk, { onConflict: 'message_id' });
 
-    for (const fileName of channelFiles) {
-      const filePath = path.join(DATA_DIR, fileName);
-
-      try {
-        const rawContent = await readFile(filePath, 'utf8');
-        const data = JSON.parse(rawContent);
-
-        channels.push({
-          fileName,
-          filePath,
-          channelId: data.channelId ?? fileName.replace(/^channel_/, '').replace(/\.json$/, ''),
-          channelName: data.channelName ?? 'canale sconosciuto',
-          totalMessages: data.totalMessages ?? data.messageCount ?? 0,
-          totalAttachments: data.totalAttachments ?? data.attachmentCount ?? 0,
-          indexedAt: data.indexedAt ?? null
-        });
-      } catch (error) {
-        logWarn('indexer:archive', `Archivio ${fileName} non leggibile o non valido:`, error);
-        channels.push({
-          fileName,
-          filePath,
-          channelId: fileName.replace(/^channel_/, '').replace(/\.json$/, ''),
-          channelName: 'archivio non leggibile',
-          totalMessages: 0,
-          totalAttachments: 0,
-          indexedAt: null,
-          invalid: true
-        });
-      }
-    }
-
-    return {
-      dataDir: DATA_DIR,
-      totalFiles: channelFiles.length,
-      channels
-    };
-  } catch (error) {
-    throw new Error(`Impossibile leggere la cartella data/: ${error.message}`);
+    if (error) throw error;
   }
 }
 
-export async function deleteChannelArchive(channelId) {
-  await mkdir(DATA_DIR, { recursive: true });
+function countAttachments(rows) {
+  return rows.reduce((total, row) => {
+    const attachments = Array.isArray(row.attachments) ? row.attachments : [];
+    return total + attachments.length;
+  }, 0);
+}
 
-  const filePath = getOutputFilePath(channelId);
+async function getChannelRowCount(channelId) {
+  const supabase = getSupabaseClient();
+  const { count, error } = await supabase
+    .from(SUPABASE_TABLE)
+    .select('id', { count: 'exact', head: true })
+    .eq('channel_id', channelId);
 
-  try {
-    await rm(filePath);
-    return { deleted: true, filePath };
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return { deleted: false, filePath, notFound: true };
+  if (error) throw error;
+  return count ?? 0;
+}
+
+async function fetchAllArchiveRows(columns) {
+  const supabase = getSupabaseClient();
+  const rows = [];
+  let from = 0;
+
+  while (true) {
+    const to = from + SUPABASE_READ_PAGE_SIZE - 1;
+    const { data, error } = await supabase
+      .from(SUPABASE_TABLE)
+      .select(columns)
+      .range(from, to);
+
+    if (error) throw error;
+    const page = data ?? [];
+    rows.push(...page);
+
+    if (page.length < SUPABASE_READ_PAGE_SIZE) break;
+    from += SUPABASE_READ_PAGE_SIZE;
+  }
+
+  return rows;
+}
+
+export async function getArchiveStatus() {
+  const rows = await fetchAllArchiveRows(
+    'guild_id,guild_name,channel_id,channel_name,message_id,attachments,indexed_at'
+  );
+  const channelsById = new Map();
+
+  for (const row of rows) {
+    const channelId = row.channel_id ?? 'canale_sconosciuto';
+    const existing = channelsById.get(channelId) ?? {
+      guildId: row.guild_id ?? null,
+      guildName: row.guild_name ?? 'server sconosciuto',
+      channelId,
+      channelName: row.channel_name ?? 'canale sconosciuto',
+      totalMessages: 0,
+      totalAttachments: 0,
+      indexedAt: null
+    };
+
+    existing.totalMessages += 1;
+    existing.totalAttachments += Array.isArray(row.attachments) ? row.attachments.length : 0;
+
+    if (row.indexed_at && (!existing.indexedAt || row.indexed_at > existing.indexedAt)) {
+      existing.indexedAt = row.indexed_at;
     }
 
-    throw error;
+    channelsById.set(channelId, existing);
   }
+
+  const channels = [...channelsById.values()].sort((a, b) => {
+    const guildCompare = String(a.guildName).localeCompare(String(b.guildName));
+    if (guildCompare !== 0) return guildCompare;
+    return String(a.channelName).localeCompare(String(b.channelName));
+  });
+
+  return {
+    storage: `Supabase:${SUPABASE_TABLE}`,
+    totalChannels: channels.length,
+    totalMessages: rows.length,
+    totalAttachments: channels.reduce((total, channel) => total + channel.totalAttachments, 0),
+    channels
+  };
+}
+
+export async function deleteChannelArchive(channelId) {
+  const supabase = getSupabaseClient();
+  const existingRows = await getChannelRowCount(channelId);
+  const { error } = await supabase
+    .from(SUPABASE_TABLE)
+    .delete()
+    .eq('channel_id', channelId);
+
+  if (error) throw error;
+
+  return {
+    deleted: existingRows > 0,
+    deletedRows: existingRows,
+    storage: `Supabase:${SUPABASE_TABLE}`,
+    channelId
+  };
 }
 
 export async function reindexChannelById(client, channelId, options = {}) {
@@ -183,7 +233,8 @@ export async function reindexChannelById(client, channelId, options = {}) {
 
   return {
     ...indexResult,
-    deletedOldArchive: deleteResult.deleted
+    deletedOldArchive: deleteResult.deleted,
+    deletedRows: deleteResult.deletedRows
   };
 }
 
@@ -210,13 +261,14 @@ export async function indexChannelMessages(channel, options = {}) {
     throw new ChannelNotFetchableError();
   }
 
-  const messages = [];
+  const indexedAt = new Date().toISOString();
+  let totalMessages = 0;
   let totalAttachments = 0;
   let before;
   let lastLoggedCount = 0;
 
-  while (messages.length < maxMessages) {
-    const fetchLimit = Math.min(batchSize, maxMessages - messages.length);
+  while (totalMessages < maxMessages) {
+    const fetchLimit = Math.min(batchSize, maxMessages - totalMessages);
     const fetchOptions = { limit: fetchLimit };
     if (before) fetchOptions.before = before;
 
@@ -225,12 +277,12 @@ export async function indexChannelMessages(channel, options = {}) {
     if (batch.size === 0) break;
 
     const orderedMessages = [...batch.values()].sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+    const rows = orderedMessages.map((message) => serializeMessage(message, channel, indexedAt));
 
-    for (const message of orderedMessages) {
-      const serialized = serializeMessage(message, channel);
-      messages.push(serialized);
-      totalAttachments += serialized.attachments.length;
-    }
+    await upsertRows(rows);
+
+    totalMessages += rows.length;
+    totalAttachments += countAttachments(rows);
 
     const oldestMessage = [...batch.values()].reduce((oldest, message) => {
       if (!oldest) return message;
@@ -238,36 +290,26 @@ export async function indexChannelMessages(channel, options = {}) {
     }, null);
     before = oldestMessage?.id;
 
-    if (!before || batch.size < fetchLimit) break;
-
-    if (messages.length - lastLoggedCount >= LOG_EVERY_MESSAGES) {
-      lastLoggedCount = messages.length;
-      logInfo('indexer:progress', `Indicizzazione canale ${channel.id}: ${messages.length} messaggi elaborati...`);
+    if (totalMessages - lastLoggedCount >= LOG_EVERY_MESSAGES) {
+      lastLoggedCount = totalMessages;
+      logInfo('indexer:progress', `Indicizzazione Supabase canale ${channel.id}: ${totalMessages} messaggi salvati...`);
     }
+
+    if (!before || batch.size < fetchLimit) break;
 
     // Piccola pausa volontaria tra blocchi per ridurre il rischio di rate limit Discord.
     await wait(batchDelayMs);
   }
 
-  await mkdir(DATA_DIR, { recursive: true });
-
-  const filePath = getOutputFilePath(channel.id);
-  const payload = {
-    indexedAt: new Date().toISOString(),
+  return {
     channelId: channel.id,
     channelName: getChannelName(channel),
     guildId: getGuildId(channel),
-    totalMessages: messages.length,
-    totalAttachments,
-    messages
-  };
-
-  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
-
-  return {
-    channelId: channel.id,
-    filePath,
-    totalMessages: messages.length,
+    guildName: getGuildName(channel),
+    storage: `Supabase:${SUPABASE_TABLE}`,
+    totalMessages,
     totalAttachments
   };
 }
+
+export { SupabaseConfigError };

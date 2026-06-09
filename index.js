@@ -7,7 +7,8 @@ import {
   deleteChannelArchive,
   getArchiveStatus,
   indexChannelById,
-  reindexChannelById
+  reindexChannelById,
+  SupabaseConfigError
 } from './src/discordIndexer.js';
 import {
   formatArchiveResultsForDiscord,
@@ -143,10 +144,18 @@ async function ensureAdministrator(message) {
   if (isAdministrator(message)) return true;
 
   await message.reply({
-    content: "Solo un amministratore può gestire l'archivio locale di Jarvis.",
+    content: "Solo un amministratore può gestire l'archivio Supabase di Jarvis.",
     allowedMentions: { repliedUser: false }
   });
   return false;
+}
+
+function buildSupabaseConfigErrorMessage(error) {
+  if (error instanceof SupabaseConfigError) {
+    return 'Supabase non è configurato: imposta SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nelle variabili ambiente di Render.';
+  }
+
+  return null;
 }
 
 function buildIndexErrorMessage(error) {
@@ -154,7 +163,10 @@ function buildIndexErrorMessage(error) {
     return 'Questo canale non supporta il recupero dei messaggi storici.';
   }
 
-  return 'Mi dispiace, non sono riuscito a indicizzare questo canale. Controlla che il bot abbia i permessi per vedere il canale e leggere la cronologia messaggi.';
+  const supabaseConfigMessage = buildSupabaseConfigErrorMessage(error);
+  if (supabaseConfigMessage) return supabaseConfigMessage;
+
+  return 'Mi dispiace, non sono riuscito a indicizzare questo canale. Controlla che il bot abbia i permessi Discord e che Supabase sia configurato correttamente.';
 }
 
 async function replyWithChunks(message, content) {
@@ -177,7 +189,7 @@ async function handleIndexChannelCommand(message) {
     });
 
     await message.reply({
-      content: `Indicizzazione completata: ho salvato ${result.totalMessages} messaggi e trovato ${result.totalAttachments} allegati. File creato: ${result.filePath}`,
+      content: `Indicizzazione completata: ho salvato ${result.totalMessages} messaggi e trovato ${result.totalAttachments} allegati su Supabase (${result.storage}).`,
       allowedMentions: { repliedUser: false }
     });
   } catch (error) {
@@ -200,24 +212,24 @@ async function handleArchiveStatusCommand(message) {
   try {
     const status = await getArchiveStatus();
 
-    if (status.totalFiles === 0) {
+    if (status.totalChannels === 0) {
       await message.reply({
-        content: 'Archivio vuoto: non ho trovato file `channel_*.json` nella cartella `data/`.',
+        content: 'Archivio Supabase vuoto: non ho trovato messaggi indicizzati nella tabella `discord_messages`.',
         allowedMentions: { repliedUser: false }
       });
       return;
     }
 
     const lines = [
-      `Archivio locale: ${status.totalFiles} file channel_*.json trovati in ${status.dataDir}.`,
+      `Archivio Supabase: ${status.totalChannels} canali indicizzati in ${status.storage}.`,
+      `Totale messaggi: ${status.totalMessages}. Totale allegati: ${status.totalAttachments}.`,
       '',
       'Canali indicizzati:'
     ];
 
     for (const channel of status.channels) {
-      const warning = channel.invalid ? ' ⚠️ file non leggibile' : '';
       lines.push(
-        `- ${channel.channelName} (${channel.channelId}): ${channel.totalMessages} messaggi, ${channel.totalAttachments} allegati, ultima indicizzazione: ${channel.indexedAt ?? 'non disponibile'}.${warning}`
+        `- ${channel.guildName} / #${channel.channelName} (${channel.channelId}): ${channel.totalMessages} messaggi, ${channel.totalAttachments} allegati, ultima indicizzazione: ${channel.indexedAt ?? 'non disponibile'}.`
       );
     }
 
@@ -225,7 +237,7 @@ async function handleArchiveStatusCommand(message) {
   } catch (error) {
     logError('archive:status', "Errore durante la lettura dello stato dell'archivio:", error);
     await message.reply({
-      content: "Non sono riuscito a leggere lo stato dell'archivio locale. Controlla i log del bot.",
+      content: buildSupabaseConfigErrorMessage(error) ?? "Non sono riuscito a leggere lo stato dell'archivio Supabase. Controlla i log del bot.",
       allowedMentions: { repliedUser: false }
     });
   }
@@ -239,20 +251,20 @@ async function handleDeleteChannelArchiveCommand(message) {
 
     if (result.deleted) {
       await message.reply({
-        content: `Archivio del canale corrente cancellato: ${result.filePath}`,
+        content: `Archivio Supabase del canale corrente cancellato: ${result.deletedRows} righe rimosse da ${result.storage}.`,
         allowedMentions: { repliedUser: false }
       });
       return;
     }
 
     await message.reply({
-      content: `Nessun archivio da cancellare per questo canale. File non presente: ${result.filePath}`,
+      content: 'Nessun archivio Supabase da cancellare per questo canale: non ho trovato righe con questo channel_id.',
       allowedMentions: { repliedUser: false }
     });
   } catch (error) {
     logError('archive:delete', "Errore durante la cancellazione dell'archivio del canale:", error);
     await message.reply({
-      content: "Errore durante la cancellazione dell'archivio del canale. Controlla i log del bot.",
+      content: buildSupabaseConfigErrorMessage(error) ?? "Errore durante la cancellazione dell'archivio del canale. Controlla i log del bot.",
       allowedMentions: { repliedUser: false }
     });
   }
@@ -263,7 +275,7 @@ async function handleReindexChannelCommand(message) {
 
   try {
     await message.reply({
-      content: 'Reindicizzazione del canale avviata: cancello il vecchio JSON se presente e ricreo l\'archivio...',
+      content: "Reindicizzazione del canale avviata: cancello da Supabase le vecchie righe del canale corrente e ricreo l'archivio...",
       allowedMentions: { repliedUser: false }
     });
 
@@ -272,7 +284,7 @@ async function handleReindexChannelCommand(message) {
     });
 
     await message.reply({
-      content: `Reindicizzazione completata: ho salvato ${result.totalMessages} messaggi e trovato ${result.totalAttachments} allegati. File creato: ${result.filePath}`,
+      content: `Reindicizzazione completata: ho cancellato ${result.deletedRows} vecchie righe, salvato ${result.totalMessages} messaggi e trovato ${result.totalAttachments} allegati su Supabase (${result.storage}).`,
       allowedMentions: { repliedUser: false }
     });
   } catch (error) {
@@ -335,7 +347,7 @@ async function handleArchiveSearchCommand(message) {
   } catch (error) {
     logError('archive:search', "Errore durante la ricerca nell'archivio:", error);
     await message.reply({
-      content: "Errore durante la ricerca nell'archivio locale. Controlla i log del bot.",
+      content: buildSupabaseConfigErrorMessage(error) ?? "Errore durante la ricerca nell'archivio Supabase. Controlla i log del bot.",
       allowedMentions: { repliedUser: false }
     });
   }

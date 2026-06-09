@@ -1,8 +1,8 @@
-import { readFile, readdir } from 'node:fs/promises';
-import path from 'node:path';
+import { getSupabaseClient } from './supabaseClient.js';
 
-const DATA_DIR = path.join(process.cwd(), 'data');
+const SUPABASE_TABLE = 'discord_messages';
 const MAX_RESULTS = 10;
+const SUPABASE_SEARCH_LIMIT = 200;
 const STOP_WORDS = new Set([
   'jarvis',
   'il',
@@ -67,6 +67,7 @@ function normalizeText(value) {
 }
 
 function extractWords(value) {
+  // Include codici brevi e alfanumerici come A24, A14, DR e KO.
   return normalizeText(value).match(/[a-z0-9]+/g) ?? [];
 }
 
@@ -88,21 +89,6 @@ function extractUsefulWords(query) {
   const usefulWords = words.filter((word) => word.length > 1 && !STOP_WORDS.has(word));
 
   return [...new Set(expandDomainWords(usefulWords))];
-}
-
-async function readArchiveFiles() {
-  try {
-    const fileNames = await readdir(DATA_DIR);
-    return fileNames
-      .filter((fileName) => /^channel_\d+\.json$/.test(fileName))
-      .sort();
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return [];
-    }
-
-    throw error;
-  }
 }
 
 function containsNumberedMultilineList(content) {
@@ -142,13 +128,48 @@ function getMessageScore(message, usefulWords, originalWords) {
   return score;
 }
 
-function toSearchResult(message, archiveData, score) {
+function escapePostgrestLikeValue(value) {
+  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
+}
+
+async function getTotalMessageCount() {
+  const supabase = getSupabaseClient();
+  const { count, error } = await supabase
+    .from(SUPABASE_TABLE)
+    .select('id', { count: 'exact', head: true });
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+async function fetchCandidateRows(usefulWords) {
+  const supabase = getSupabaseClient();
+  const filters = usefulWords
+    .map((word) => `content.ilike.%${escapePostgrestLikeValue(word)}%`)
+    .join(',');
+
+  const { data, error } = await supabase
+    .from(SUPABASE_TABLE)
+    .select('guild_id,guild_name,channel_id,channel_name,message_id,created_at,content,attachments,indexed_at')
+    .or(filters)
+    .order('created_at', { ascending: false })
+    .limit(SUPABASE_SEARCH_LIMIT);
+
+  if (error) throw error;
+  return data ?? [];
+}
+
+function toSearchResult(row, score) {
   return {
     score,
-    channelName: message.channelName ?? archiveData.channelName ?? 'canale sconosciuto',
-    createdAt: message.createdAt ?? null,
-    content: message.content ?? '',
-    attachments: Array.isArray(message.attachments) ? message.attachments : []
+    guildId: row.guild_id ?? null,
+    guildName: row.guild_name ?? 'server sconosciuto',
+    channelId: row.channel_id ?? null,
+    channelName: row.channel_name ?? 'canale sconosciuto',
+    messageId: row.message_id ?? null,
+    createdAt: row.created_at ?? null,
+    content: row.content ?? '',
+    attachments: Array.isArray(row.attachments) ? row.attachments : []
   };
 }
 
@@ -161,33 +182,20 @@ export async function searchArchive(query, options = {}) {
     return { archiveEmpty: false, results: [], usefulWords };
   }
 
-  const fileNames = await readArchiveFiles();
+  const candidates = await fetchCandidateRows(usefulWords);
 
-  if (fileNames.length === 0) {
-    return { archiveEmpty: true, results: [], usefulWords };
+  if (candidates.length === 0) {
+    const totalMessages = await getTotalMessageCount();
+    return { archiveEmpty: totalMessages === 0, results: [], usefulWords };
   }
 
-  const matches = [];
-
-  for (const fileName of fileNames) {
-    const filePath = path.join(DATA_DIR, fileName);
-    const rawContent = await readFile(filePath, 'utf8');
-    const archiveData = JSON.parse(rawContent);
-    const messages = Array.isArray(archiveData.messages) ? archiveData.messages : [];
-
-    for (const message of messages) {
-      const score = getMessageScore(message, usefulWords, originalWords);
-
-      if (score > 0) {
-        matches.push(toSearchResult(message, archiveData, score));
-      }
-    }
-  }
-
-  matches.sort((a, b) => {
-    if (b.score !== a.score) return b.score - a.score;
-    return String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? ''));
-  });
+  const matches = candidates
+    .map((message) => toSearchResult(message, getMessageScore(message, usefulWords, originalWords)))
+    .filter((result) => result.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return String(b.createdAt ?? '').localeCompare(String(a.createdAt ?? ''));
+    });
 
   return {
     archiveEmpty: false,
@@ -207,7 +215,7 @@ export function formatArchiveResultsForDiscord(results) {
       }).join(', ')}`
       : '';
 
-    return `Trovato in #${result.channelName}${result.createdAt ? ` (${result.createdAt})` : ''}:\n${result.content}${attachments}`;
+    return `Trovato in ${result.guildName} / #${result.channelName}${result.createdAt ? ` (${result.createdAt})` : ''}:\n${result.content}${attachments}`;
   }).join('\n\n---\n\n');
 }
 
@@ -217,6 +225,6 @@ export function formatArchiveResultsForGemini(results) {
       ? `\nAllegati: ${JSON.stringify(result.attachments)}`
       : '';
 
-    return `[Risultato ${index + 1}]\nNome canale: #${result.channelName}\nData messaggio: ${result.createdAt ?? 'non disponibile'}\nContenuto completo del messaggio:\n${result.content}${attachments}`;
+    return `[Risultato ${index + 1}]\nServer: ${result.guildName}\nNome canale: #${result.channelName}\nID canale: ${result.channelId ?? 'non disponibile'}\nData messaggio: ${result.createdAt ?? 'non disponibile'}\nContenuto completo del messaggio:\n${result.content}${attachments}`;
   }).join('\n\n');
 }
