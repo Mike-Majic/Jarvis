@@ -1,0 +1,30 @@
+# Dipendenze Node.js
+node_modules/
+
+# Variabili d'ambiente e segreti
+.env
+.env.*
+!.env.example
+
+# Log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+*.log
+
+# Output di build/cache
+coverage/
+dist/
+build/
+.cache/
+
+# File di sistema/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Eventuale archivio locale temporaneo/legacy generato dall'indicizzazione Discord
+data/
