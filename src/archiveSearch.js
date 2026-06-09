@@ -6,7 +6,6 @@ const SUPABASE_SEARCH_LIMIT = 200;
 const STOP_WORDS = new Set([
   'jarvis',
   'il',
-  'lo',
   'la',
   'i',
   'gli',
@@ -18,6 +17,14 @@ const STOP_WORDS = new Set([
   'come',
   'dove',
   'quando',
+  'quanto',
+  'quale',
+  'quali',
+  'lo',
+  'mi',
+  'devo',
+  'posso',
+  'fare',
   'della',
   'del',
   'di',
@@ -44,6 +51,39 @@ const ARCHIVE_DOMAIN_WORDS = new Set([
   'rosa',
   'turchese'
 ]);
+const TECHNICAL_SYNONYMS = {
+  tubazione: ['tubazione', 'tubo', 'ostruita', 'ostruito', 'chiusura', 'chiudo', 'a24', 'a14'],
+  tubo: ['tubazione', 'tubo', 'ostruita', 'ostruito', 'chiusura', 'a24', 'a14'],
+  ostruita: ['tubazione', 'tubo', 'ostruita', 'ostruito', 'chiusura', 'a24', 'a14'],
+  ostruito: ['tubazione', 'tubo', 'ostruita', 'ostruito', 'chiusura', 'a24', 'a14'],
+  chiusura: ['chiusura', 'causale', 'a24', 'a14', 'dr', 'ko'],
+  chiudo: ['chiusura', 'causale', 'a24', 'a14', 'dr', 'ko'],
+  fibra: ['fibra', 'colori', 'numerazione', 'splitter', 'cavo'],
+  colori: ['fibra', 'colori', 'numerazione', 'splitter', 'cavo'],
+  modem: ['modem', 'seriale', 'scarico', 'guasto'],
+  delivery: ['delivery', 'chiusura', 'causale', 'tim', 'olo'],
+  permuta: ['permuta', 'centrale', 'armadio', 'onu', 'ont'],
+  causale: ['causale', 'chiusura', 'a24', 'a14', 'dr', 'ko'],
+  guasto: ['guasto', 'modem', 'seriale', 'causale', 'chiusura'],
+  seriale: ['seriale', 'modem', 'scarico', 'guasto'],
+  splitter: ['splitter', 'fibra', 'colori', 'numerazione'],
+  tim: ['tim', 'delivery', 'olo', 'causale'],
+  olo: ['olo', 'delivery', 'tim', 'causale'],
+  fastweb: ['fastweb', 'delivery', 'olo', 'causale'],
+  vodafone: ['vodafone', 'delivery', 'olo', 'causale'],
+  wind: ['wind', 'delivery', 'olo', 'causale'],
+  iliad: ['iliad', 'delivery', 'olo', 'causale'],
+  sky: ['sky', 'delivery', 'olo', 'causale'],
+  centrale: ['centrale', 'armadio', 'permuta', 'onu', 'ont'],
+  armadio: ['armadio', 'centrale', 'permuta', 'onu', 'ont'],
+  ont: ['ont', 'onu', 'permuta', 'centrale', 'armadio'],
+  onu: ['onu', 'ont', 'permuta', 'centrale', 'armadio'],
+  a24: ['a24', 'tubazione', 'ostruita', 'chiusura'],
+  a14: ['a14', 'tubazione', 'ostruita', 'chiusura'],
+  dr: ['dr', 'causale', 'chiusura'],
+  ko: ['ko', 'causale', 'chiusura']
+};
+
 const COLOR_WORDS = [
   'rosso',
   'verde',
@@ -76,12 +116,22 @@ function hasArchiveDomainWord(words) {
 }
 
 function expandDomainWords(words) {
-  if (!hasArchiveDomainWord(words)) return words;
+  const expandedWords = [...words];
 
-  // Se la domanda riguarda colori/fibra/numerazioni, cerchiamo anche i termini
-  // tipici delle tabelle colori: spesso il messaggio indicizzato contiene solo
-  // la lista completa e non tutte le parole della domanda dell'utente.
-  return [...words, 'colori', 'colore', 'fibra', 'numerazione', 'numero', ...COLOR_WORDS];
+  for (const word of words) {
+    if (TECHNICAL_SYNONYMS[word]) {
+      expandedWords.push(...TECHNICAL_SYNONYMS[word]);
+    }
+  }
+
+  if (hasArchiveDomainWord(words)) {
+    // Se la domanda riguarda colori/fibra/numerazioni, cerchiamo anche i termini
+    // tipici delle tabelle colori: spesso il messaggio indicizzato contiene solo
+    // la lista completa e non tutte le parole della domanda dell'utente.
+    expandedWords.push('colori', 'colore', 'fibra', 'numerazione', 'numero', ...COLOR_WORDS);
+  }
+
+  return expandedWords;
 }
 
 function extractUsefulWords(query) {
@@ -89,6 +139,48 @@ function extractUsefulWords(query) {
   const usefulWords = words.filter((word) => word.length > 1 && !STOP_WORDS.has(word));
 
   return [...new Set(expandDomainWords(usefulWords))];
+}
+
+function pushUnique(values, value) {
+  const normalized = normalizeText(value).trim();
+  if (normalized && !values.includes(normalized)) {
+    values.push(normalized);
+  }
+}
+
+export function buildArchiveSearchQueries(prompt) {
+  const words = extractWords(prompt).filter((word) => word.length > 1 && !STOP_WORDS.has(word));
+  const queries = [];
+
+  for (const word of words) {
+    pushUnique(queries, word);
+  }
+
+  for (let index = 0; index < words.length - 1; index += 1) {
+    pushUnique(queries, `${words[index]} ${words[index + 1]}`);
+  }
+
+  const expandedWords = expandDomainWords(words);
+  for (const word of expandedWords) {
+    pushUnique(queries, word);
+  }
+
+  if (words.some((word) => ['tubazione', 'tubo', 'ostruita', 'ostruito'].includes(word))) {
+    pushUnique(queries, 'tubazione ostruita');
+    pushUnique(queries, 'chiusura tubazione');
+    pushUnique(queries, 'a24');
+    pushUnique(queries, 'a14');
+  }
+
+  if (words.some((word) => ['causale', 'chiusura', 'chiudo'].includes(word))) {
+    pushUnique(queries, 'causale chiusura');
+    pushUnique(queries, 'a24');
+    pushUnique(queries, 'a14');
+    pushUnique(queries, 'dr');
+    pushUnique(queries, 'ko');
+  }
+
+  return queries.slice(0, 30);
 }
 
 function containsNumberedMultilineList(content) {
@@ -104,10 +196,17 @@ function containsColorNumberedList(content) {
   return COLOR_WORDS.some((color) => new RegExp(`(^|\\n)\\s*\\d+\\s*[-.)]?\\s+${color}\\b`, 'i').test(normalized));
 }
 
-function getMessageScore(message, usefulWords, originalWords) {
+function getMessageScore(message, usefulWords, originalWords, searchQueries = []) {
   const content = normalizeText(message.content);
   const matchedWords = usefulWords.filter((word) => content.includes(word));
   let score = matchedWords.length;
+
+  for (const query of searchQueries) {
+    const normalizedQuery = normalizeText(query);
+    if (normalizedQuery.includes(' ') && content.includes(normalizedQuery)) {
+      score += 5;
+    }
+  }
 
   if (score > 0 && containsNumberedMultilineList(message.content)) {
     score += 2;
@@ -122,6 +221,17 @@ function getMessageScore(message, usefulWords, originalWords) {
   for (const color of COLOR_WORDS) {
     if (originalWords.includes(color) && new RegExp(`(^|\\n)\\s*\\d+\\s*[-.)]?\\s+${color}\\b`, 'i').test(content)) {
       score += 8;
+    }
+  }
+
+  if (originalWords.some((word) => ['tubazione', 'tubo', 'ostruita', 'ostruito'].includes(word))
+    && /tubazione.*\b(a24|a14)\b|\b(a24|a14)\b.*tubazione/i.test(content)) {
+    score += 12;
+  }
+
+  for (const code of ['a24', 'a14', 'dr', 'ko']) {
+    if (originalWords.includes(code) && new RegExp(`(^|[^a-z0-9])${code}([^a-z0-9]|$)`, 'i').test(content)) {
+      score += 10;
     }
   }
 
@@ -143,6 +253,7 @@ async function getTotalMessageCount() {
 }
 
 async function fetchCandidateRows(usefulWords) {
+  if (usefulWords.length === 0) return [];
   const supabase = getSupabaseClient();
   const filters = usefulWords
     .map((word) => `content.ilike.%${escapePostgrestLikeValue(word)}%`)
@@ -175,22 +286,37 @@ function toSearchResult(row, score) {
 
 export async function searchArchive(query, options = {}) {
   const maxResults = options.maxResults ?? MAX_RESULTS;
+  const searchQueries = buildArchiveSearchQueries(query);
   const originalWords = extractWords(query);
-  const usefulWords = extractUsefulWords(query);
+  const usefulWords = [...new Set(searchQueries.flatMap((searchQuery) => extractUsefulWords(searchQuery)))];
 
   if (usefulWords.length === 0) {
-    return { archiveEmpty: false, results: [], usefulWords };
+    return { archiveEmpty: false, results: [], usefulWords, searchQueries };
   }
 
-  const candidates = await fetchCandidateRows(usefulWords);
+  const candidatesByMessageId = new Map();
+
+  // Prova tutte le query generate: una domanda naturale può non contenere il
+  // codice salvato in archivio, ma i sinonimi tecnici possono portare al match.
+  for (const searchQuery of searchQueries) {
+    const queryWords = extractUsefulWords(searchQuery);
+    const rows = await fetchCandidateRows(queryWords);
+
+    for (const row of rows) {
+      const key = row.message_id ?? `${row.channel_id}:${row.created_at}:${row.content}`;
+      candidatesByMessageId.set(key, row);
+    }
+  }
+
+  const candidates = [...candidatesByMessageId.values()];
 
   if (candidates.length === 0) {
     const totalMessages = await getTotalMessageCount();
-    return { archiveEmpty: totalMessages === 0, results: [], usefulWords };
+    return { archiveEmpty: totalMessages === 0, results: [], usefulWords, searchQueries };
   }
 
   const matches = candidates
-    .map((message) => toSearchResult(message, getMessageScore(message, usefulWords, originalWords)))
+    .map((message) => toSearchResult(message, getMessageScore(message, usefulWords, originalWords, searchQueries)))
     .filter((result) => result.score > 0)
     .sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
@@ -200,7 +326,8 @@ export async function searchArchive(query, options = {}) {
   return {
     archiveEmpty: false,
     results: matches.slice(0, maxResults),
-    usefulWords
+    usefulWords,
+    searchQueries
   };
 }
 

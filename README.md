@@ -257,7 +257,7 @@ Esempio:
 Jarvis il colore viola della fibra, che numero è?
 ```
 
-Per le domande tecniche Jarvis cerca su Supabase nella colonna `content` prima di chiamare Gemini; se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; se la domanda è chiaramente tecnica e l'archivio non contiene risultati, può rispondere che non trova l'informazione nell'archivio.
+Per le domande tecniche Jarvis analizza la frase, genera più query di ricerca e cerca su Supabase nella colonna `content` prima di chiamare Gemini. Se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; se la domanda è chiaramente tecnica e l'archivio non contiene risultati, può rispondere che non trova l'informazione nell'archivio.
 
 Per i messaggi normali, ad esempio `Jarvis fa caldo`, `Jarvis come stai`, `Jarvis annamo bene` o battute/sfottò, Jarvis non cerca nell'archivio e risponde in modo naturale con Gemini o con risposte personalizzate.
 
@@ -267,6 +267,14 @@ Puoi anche interrogare direttamente l'archivio senza usare Gemini:
 Jarvis cerca archivio viola
 ```
 
+Esempio tecnico:
+
+```text
+Jarvis cerca archivio tubazione ostruita
+```
+
+Questa ricerca può trovare anche un messaggio che contiene `TUBAZIONE A24 | A14`, grazie ai sinonimi tecnici.
+
 oppure:
 
 ```text
@@ -275,7 +283,7 @@ Jarvis verifica archivio viola
 
 Questo comando restituisce risultati grezzi trovati su Supabase, includendo server, canale, data, contenuto del messaggio e metadati degli allegati se presenti.
 
-La ricerca è keyword based, case-insensitive e supporta anche codici brevi o alfanumerici come `A24`, `A14`, `DR` e `KO`. Riconosce meglio domande su colori, fibra e numerazioni; per le liste numerate multilinea include tutto il contenuto del messaggio indicizzato nel contesto.
+La ricerca è keyword based, case-insensitive e supporta anche codici brevi o alfanumerici come `A24`, `A14`, `DR` e `KO`. Usa anche una mappa di sinonimi tecnici: ad esempio `tubazione ostruita` prova anche `tubazione`, `ostruita`, `chiusura tubazione`, `A24` e `A14`; `fibra` espande verso colori, numerazione, splitter e cavo; `causale` espande verso chiusura, `A24`, `A14`, `DR` e `KO`. La stessa logica multi-query viene usata sia dalle domande automatiche sia da `Jarvis cerca archivio <testo>`. Per le liste numerate multilinea o blocchi molto pertinenti include tutto il contenuto del messaggio indicizzato nel contesto.
 
 Se Supabase non contiene ancora righe indicizzate, Jarvis risponde:
 
