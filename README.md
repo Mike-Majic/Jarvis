@@ -19,6 +19,7 @@ Non usa comandi slash: gli utenti possono scrivere normalmente nel canale, ad es
 - Mantiene una piccola memoria conversazionale per canale, salvata solo in RAM.
 - Indicizza messaggi e metadati degli allegati su Supabase nella tabella `discord_messages`.
 - Cerca nello storico Supabase per usare i risultati come contesto nelle domande tecniche.
+- Cerca online dati aggiornati con Brave Search API o Tavily API quando la domanda lo richiede.
 - Divide automaticamente le risposte troppo lunghe in più messaggi compatibili con Discord.
 - Gestisce gli errori senza far crashare il processo.
 
@@ -36,6 +37,7 @@ Jarvis usa il pacchetto ufficiale `@google/genai` per comunicare con Gemini API 
 - Node.js 18 o superiore.
 - Un bot Discord creato nel [Discord Developer Portal](https://discord.com/developers/applications).
 - Una chiave API Gemini.
+- Una chiave Brave Search API oppure Tavily API per la ricerca online aggiornata.
 - Un progetto Supabase con la tabella `discord_messages` già creata.
 
 ## Installazione
@@ -62,6 +64,9 @@ GEMINI_API_KEY=la_tua_chiave_gemini
 GEMINI_MODEL=gemini-2.5-flash
 SUPABASE_URL=https://il-tuo-progetto.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=la_tua_service_role_key
+WEB_SEARCH_PROVIDER=brave
+BRAVE_SEARCH_API_KEY=la_tua_chiave_brave
+TAVILY_API_KEY=
 INDEX_MAX_MESSAGES=5000
 ```
 
@@ -120,6 +125,40 @@ Oppure menziona il bot:
 
 Jarvis risponderà nel canale usando Gemini API.
 
+
+## Ricerca online aggiornata
+
+Jarvis può usare una ricerca web generica prima di chiamare Gemini quando la domanda richiede dati aggiornati, ad esempio:
+
+- meteo e previsioni;
+- notizie o eventi recenti;
+- prezzi, quotazioni, cambi o crypto;
+- aziende, prodotti, disponibilità e recensioni recenti;
+- luoghi, indirizzi, orari o eventi;
+- risultati sportivi, classifiche o calendari.
+
+Provider supportati:
+
+```env
+WEB_SEARCH_PROVIDER=brave
+BRAVE_SEARCH_API_KEY=la_tua_chiave_brave
+```
+
+oppure:
+
+```env
+WEB_SEARCH_PROVIDER=tavily
+TAVILY_API_KEY=la_tua_chiave_tavily
+```
+
+Se una domanda richiede dati aggiornati ma la chiave non è configurata, Jarvis risponde:
+
+```text
+La ricerca online non è ancora configurata. Serve impostare la chiave API su Render.
+```
+
+Quando la ricerca è configurata, Jarvis passa a Gemini un blocco `CONTENUTO WEB AGGIORNATO` con risultati, estratti e link. La risposta deve restare breve, includere la fonte principale quando disponibile e avvisare se i risultati non sono sufficienti. Nei log vedrai righe come `[webSearch] query=...`, `[webSearch] provider=...` e `[webSearch:error] ...`.
+
 ## Struttura del progetto
 
 ```text
@@ -131,7 +170,10 @@ Jarvis risponderà nel canale usando Gemini API.
 ├── src/
 │   ├── archiveSearch.js  # Ricerca nello storico Supabase
 │   ├── discordIndexer.js # Indicizzazione Discord su Supabase
-│   └── supabaseClient.js # Client Supabase lato server
+│   ├── supabaseClient.js # Client Supabase lato server
+│   └── tools/
+│       ├── webSearch.js  # Ricerca online Brave/Tavily
+│       └── weather.js    # Helper meteo basato sulla ricerca web
 └── README.md             # Istruzioni del progetto
 ```
 

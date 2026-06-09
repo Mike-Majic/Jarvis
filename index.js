@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { createServer } from 'node:http';
 import { GoogleGenAI } from '@google/genai';
-import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits, Status } from 'discord.js';
 import {
   ChannelNotFetchableError,
   deleteChannelArchive,
@@ -15,6 +15,12 @@ import {
   formatArchiveResultsForGemini,
   searchArchive
 } from './src/archiveSearch.js';
+import {
+  WebSearchConfigError,
+  formatWebResultsForGemini,
+  searchWeb,
+  shouldUseWebSearch
+} from './src/tools/webSearch.js';
 
 function formatLogPrefix(scope) {
   return `[${new Date().toISOString()}] [${scope}]`;
@@ -75,6 +81,13 @@ const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX
 const RAW_PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
 const PORT = Number.isFinite(RAW_PORT) && RAW_PORT > 0 ? RAW_PORT : 3000;
 const DISCORD_DIAGNOSTICS_INTERVAL_MS = 60_000;
+const DISCORD_RELOGIN_DELAY_MS = 5_000;
+let diagnosticsStarted = false;
+let reloginInProgress = false;
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function startHealthServer() {
   const server = createServer((request, response) => {
@@ -635,21 +648,100 @@ ISTRUZIONI:
   }
 }
 
+async function buildPromptWithWebContext(prompt, originalPrompt) {
+  if (!shouldUseWebSearch(originalPrompt)) {
+    return { prompt, usedWeb: false };
+  }
+
+  try {
+    const search = await searchWeb(originalPrompt, { maxResults: 5 });
+
+    if (search.results.length === 0) {
+      return {
+        prompt: `DOMANDA UTENTE:
+${originalPrompt}
+
+RICERCA ONLINE:
+Non sono stati trovati risultati sufficienti.
+
+ISTRUZIONI:
+- Rispondi in italiano in modo breve.
+- Avvisa chiaramente che i risultati online non sono sufficienti.
+- Non inventare dati aggiornati.`,
+        usedWeb: true,
+        webHadResults: false
+      };
+    }
+
+    const context = formatWebResultsForGemini(search);
+    return {
+      usedWeb: true,
+      webHadResults: true,
+      prompt: `${prompt}
+
+CONTENUTO WEB AGGIORNATO
+Provider: ${search.provider}
+Query: ${search.query}
+${context}
+
+ISTRUZIONI WEB:
+- Usa il CONTENUTO WEB AGGIORNATO per rispondere a dati recenti, prezzi, meteo, notizie, eventi, aziende, prodotti, luoghi, orari o risultati sportivi.
+- Non dire che non hai accesso a dati in tempo reale: se il blocco web è presente, usa quei risultati.
+- Rispondi in italiano in modo breve e utile.
+- Includi la fonte/link principale quando disponibile.
+- Se i risultati non sono sufficienti o sono ambigui, dillo chiaramente.
+- Non inventare dati aggiornati non presenti nelle fonti.`
+    };
+  } catch (error) {
+    if (error instanceof WebSearchConfigError) {
+      return {
+        prompt,
+        usedWeb: true,
+        webHadResults: false,
+        webConfigMissing: true
+      };
+    }
+
+    logError('webSearch:error', 'Errore durante la ricerca online:', error?.stack ?? error);
+    return {
+      prompt: `DOMANDA UTENTE:
+${originalPrompt}
+
+RICERCA ONLINE:
+La ricerca online ha generato un errore tecnico.
+
+ISTRUZIONI:
+- Rispondi in italiano in modo breve.
+- Avvisa che non riesci a verificare online in questo momento.
+- Non inventare dati aggiornati.`,
+      usedWeb: true,
+      webHadResults: false
+    };
+  }
+}
+
 async function askGemini(channelId, prompt) {
   const history = getChannelHistory(channelId);
   const archivePrompt = await buildPromptWithArchiveContext(prompt);
+  const needsWebSearch = shouldUseWebSearch(prompt);
 
-  if (archivePrompt.shouldReportMissingArchiveAnswer) {
+  if (archivePrompt.shouldReportMissingArchiveAnswer && !needsWebSearch) {
     return 'Non ho trovato questa informazione nell\'archivio.';
+  }
+
+  const webPrompt = await buildPromptWithWebContext(archivePrompt.prompt, prompt);
+
+  if (webPrompt.webConfigMissing) {
+    return 'La ricerca online non è ancora configurata. Serve impostare la chiave API su Render.';
   }
 
   try {
     const response = await gemini.models.generateContent({
       model: GEMINI_MODEL,
-      contents: convertHistoryToGeminiContents(history, archivePrompt.prompt),
+      contents: convertHistoryToGeminiContents(history, webPrompt.prompt),
       config: {
         systemInstruction:
-          `Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico, naturale e simpatico. Per messaggi normali conversa liberamente senza citare l'archivio. Se è presente un blocco CONTENUTO ARCHIVIO DISCORD, devi dare priorità assoluta a quello. Non usare conoscenza generale se contraddice l'archivio. Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e l'archivio ha risultati, rispondi solo con i dati trovati. Se il contesto non contiene la risposta, di' chiaramente che non trovi la risposta nell'archivio.`,
+          `Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico, naturale e simpatico. Per messaggi normali conversa liberamente senza citare l'archivio. Se è presente un blocco CONTENUTO ARCHIVIO DISCORD, devi dare priorità assoluta a quello. Non usare conoscenza generale se contraddice l'archivio. Se è presente un blocco CONTENUTO WEB AGGIORNATO, usalo per dati recenti e includi una fonte/link principale quando disponibile. Non inventare dati aggiornati senza fonti web. Se i risultati web non sono sufficienti, avvisa chiaramente. Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e l'archivio ha risultati, rispondi solo con i dati trovati. Se il contesto non contiene la risposta, di' chiaramente che non trovi la risposta nell'archivio.`,
         temperature: 0.4
       }
     });
@@ -666,45 +758,138 @@ async function askGemini(channelId, prompt) {
   }
 }
 
+function getWebSocketStatusLabel(status) {
+  return `${Status[status] ?? 'Unknown'} (${status})`;
+}
+
+function formatMemoryUsage() {
+  const memory = process.memoryUsage();
+  const toMb = (bytes) => `${Math.round(bytes / 1024 / 1024)}MB`;
+
+  return `rss=${toMb(memory.rss)} heapUsed=${toMb(memory.heapUsed)} heapTotal=${toMb(memory.heapTotal)} external=${toMb(memory.external)}`;
+}
+
+function formatProcessUptime() {
+  return `${Math.round(process.uptime())}s`;
+}
+
+function logErrorWithStack(scope, message, error) {
+  logError(scope, message, error?.stack ?? error);
+}
+
+async function reloginDiscord(reason) {
+  if (reloginInProgress) {
+    logWarn('discord:watchdog', `Relogin già in corso, salto nuovo tentativo. Motivo: ${reason}`);
+    return;
+  }
+
+  reloginInProgress = true;
+
+  try {
+    logWarn('discord:watchdog', `Avvio relogin Discord. Motivo: ${reason}`);
+
+    try {
+      client.destroy();
+      logWarn('discord:watchdog', 'client.destroy() completato prima del relogin.');
+    } catch (destroyError) {
+      logErrorWithStack('discord:watchdog', 'Errore durante client.destroy() prima del relogin:', destroyError);
+    }
+
+    await wait(DISCORD_RELOGIN_DELAY_MS);
+    await client.login(DISCORD_TOKEN);
+    logInfo('discord:watchdog', 'Relogin Discord completato.');
+  } catch (loginError) {
+    logErrorWithStack('discord:watchdog', 'Relogin Discord fallito:', loginError);
+  } finally {
+    reloginInProgress = false;
+  }
+}
+
+function logDiscordHeartbeat() {
+  logInfo(
+    'discord:heartbeat',
+    `status=${getWebSocketStatusLabel(client.ws.status)} ping=${client.ws.ping} user=${client.user?.tag ?? 'non disponibile'} uptime=${formatProcessUptime()} memory=${formatMemoryUsage()}`
+  );
+}
+
+async function runDiscordWatchdog() {
+  const status = client.ws.status;
+  const userMissing = client.user === null;
+
+  if (status === Status.Ready && !userMissing) return;
+
+  logWarn(
+    'discord:watchdog',
+    `Stato Discord non sano: status=${getWebSocketStatusLabel(status)} user=${client.user?.tag ?? 'null'} ping=${client.ws.ping}. Provo relogin...`
+  );
+
+  await reloginDiscord(`status=${getWebSocketStatusLabel(status)} userMissing=${userMissing}`);
+}
+
 function startDiscordDiagnostics() {
+  if (diagnosticsStarted) return;
+  diagnosticsStarted = true;
+
   setInterval(() => {
-    logInfo(
-      'discord:heartbeat',
-      `client.ws.status=${client.ws.status} ping=${client.ws.ping} user=${client.user?.tag ?? 'non disponibile'}`
-    );
+    try {
+      logDiscordHeartbeat();
+    } catch (error) {
+      logErrorWithStack('discord:heartbeat', 'Errore nel heartbeat applicativo:', error);
+    }
+  }, DISCORD_DIAGNOSTICS_INTERVAL_MS);
+
+  setInterval(() => {
+    runDiscordWatchdog().catch((error) => {
+      logErrorWithStack('discord:watchdog', 'Errore non gestito nel watchdog Discord:', error);
+    });
   }, DISCORD_DIAGNOSTICS_INTERVAL_MS);
 }
 
-client.once(Events.ClientReady, (readyClient) => {
+process.on('unhandledRejection', (reason) => {
+  logErrorWithStack('process:unhandledRejection', 'Promise rejection non gestita:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  logErrorWithStack('process:uncaughtException', 'Eccezione non gestita:', error);
+});
+
+client.on(Events.ClientReady, (readyClient) => {
   logInfo('discord:ready', `Jarvis è online come ${readyClient.user.tag}`);
-  startDiscordDiagnostics();
 });
 
-client.on('error', (error) => {
-  logError('discord:error', 'Errore client Discord:', error);
+client.on(Events.Error, (error) => {
+  logErrorWithStack('discord:error', 'Errore client Discord:', error);
 });
 
-client.on('warn', (warning) => {
+client.on(Events.Warn, (warning) => {
   logWarn('discord:warn', 'Avviso client Discord:', warning);
 });
 
-client.on('shardDisconnect', (closeEvent, shardId) => {
+client.on(Events.Debug, (debugMessage) => {
+  logInfo('discord:debug', debugMessage);
+});
+
+client.on(Events.Invalidated, () => {
+  logWarn('discord:invalidated', 'Sessione Discord invalidata. Il watchdog tenterà il relogin se necessario.');
+});
+
+client.on(Events.ShardDisconnect, (closeEvent, shardId) => {
   logWarn(
     'discord:shardDisconnect',
-    `Shard ${shardId} disconnesso. code=${closeEvent?.code ?? 'n/a'} reason=${closeEvent?.reason ?? 'n/a'}`
+    `Shard ${shardId} disconnesso. code=${closeEvent?.code ?? 'n/a'} reason=${closeEvent?.reason ?? 'n/a'} wasClean=${closeEvent?.wasClean ?? 'n/a'}`
   );
 });
 
-client.on('shardReconnecting', (shardId) => {
-  logWarn('discord:shardReconnecting', `Shard ${shardId} in riconnessione...`);
+client.on(Events.ShardReconnecting, (shardId) => {
+  logWarn('discord:shardReconnecting', `Shard ${shardId} in riconnessione... status=${getWebSocketStatusLabel(client.ws.status)}`);
 });
 
-client.on('shardResume', (shardId, replayedEvents) => {
-  logInfo('discord:shardResume', `Shard ${shardId} ripristinato. eventi riprodotti=${replayedEvents}`);
+client.on(Events.ShardResume, (shardId, replayedEvents) => {
+  logInfo('discord:shardResume', `Shard ${shardId} ripristinato. eventi riprodotti=${replayedEvents} status=${getWebSocketStatusLabel(client.ws.status)}`);
 });
 
-client.on('shardError', (error, shardId) => {
-  logError('discord:shardError', `Errore shard ${shardId}:`, error);
+client.on(Events.ShardError, (error, shardId) => {
+  logErrorWithStack('discord:shardError', `Errore shard ${shardId}:`, error);
 });
 
 client.on(Events.MessageCreate, async (message) => {
@@ -752,8 +937,9 @@ client.on(Events.MessageCreate, async (message) => {
 });
 
 startHealthServer();
+startDiscordDiagnostics();
 
 client.login(DISCORD_TOKEN).catch((error) => {
-  logError('discord:login', 'Errore durante il login del bot Discord:', error);
+  logErrorWithStack('discord:login', 'Errore durante il login del bot Discord:', error);
   process.exit(1);
 });
