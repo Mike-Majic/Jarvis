@@ -191,6 +191,24 @@ Vengono tracciati:
 - disconnessioni, riconnessioni, resume ed errori degli shard;
 - heartbeat ogni 60 secondi con `client.ws.status`, ping e user tag disponibile.
 
+
+## Errori Gemini e quota
+
+Se nei log Render compaiono errori Gemini come:
+
+- `503 UNAVAILABLE` o messaggi tipo `high demand`;
+- `429 RESOURCE_EXHAUSTED`;
+- `Quota exceeded`;
+
+significa che il bot Discord è online, ma Google Gemini non sta accettando la richiesta in quel momento. Jarvis risponde con un messaggio chiaro invece del generico errore e consiglia di riprovare più tardi o usare `Jarvis archivio <testo>` per interrogare direttamente Supabase.
+
+Per risolvere controlla su Render e Google AI:
+
+- `GEMINI_API_KEY` corretta;
+- `GEMINI_MODEL` disponibile per la tua chiave;
+- quota/rate limit del progetto Google AI;
+- eventuale piano o billing se il limite free tier è stato raggiunto.
+
 ## Health check per Render
 
 Per funzionare come **Render Web Service**, Jarvis avvia anche un piccolo server HTTP interno usando solo moduli Node.js nativi.

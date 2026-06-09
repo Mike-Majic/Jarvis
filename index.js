@@ -653,6 +653,40 @@ function isGeminiQuotaOrApiKeyError(error) {
     || message.includes('403');
 }
 
+function isGeminiOverloadedError(error) {
+  const message = `${error?.message ?? ''} ${error?.status ?? ''} ${error?.code ?? ''}`.toLowerCase();
+  return message.includes('503')
+    || message.includes('unavailable')
+    || message.includes('high demand')
+    || message.includes('overloaded')
+    || message.includes('try again later');
+}
+
+function isGeminiQuotaExceededError(error) {
+  const message = `${error?.message ?? ''} ${error?.status ?? ''} ${error?.code ?? ''}`.toLowerCase();
+  return message.includes('429')
+    || message.includes('quota')
+    || message.includes('resource_exhausted')
+    || message.includes('free_tier_requests')
+    || message.includes('rate limit');
+}
+
+function buildGeminiUserErrorMessage(error) {
+  if (isGeminiQuotaExceededError(error)) {
+    return 'Gemini ha finito la quota o sta limitando le richieste. Il bot è online, ma devo aspettare il reset quota oppure serve aumentare/abilitare il piano Google AI. Se vuoi, posso comunque cercare nello storico con `Jarvis archivio <testo>`.';
+  }
+
+  if (isGeminiOverloadedError(error)) {
+    return 'Gemini in questo momento è sovraccarico. Il bot è online: riprova tra poco. Per le procedure interne puoi usare subito `Jarvis archivio <testo>`.';
+  }
+
+  if (isGeminiQuotaOrApiKeyError(error)) {
+    return 'Gemini non sta accettando la richiesta: controlla GEMINI_API_KEY, modello e permessi su Render/Google AI. Il bot Discord è online.';
+  }
+
+  return 'Ho avuto un problema temporaneo con Gemini. Il bot è online: riprova tra poco oppure usa `Jarvis archivio <testo>` per interrogare direttamente lo storico indicizzato.';
+}
+
 async function buildPromptWithArchiveContext(prompt) {
   if (!shouldUseArchive(prompt)) {
     return { prompt, usedArchive: false, archiveHadResults: false, archiveSearchAttempted: false };
@@ -838,7 +872,7 @@ ${archivePrompt.archiveFallbackReply}`;
 Fonte: risultati Tavily disponibili nei log/contesto.`;
     }
 
-    return 'Ho avuto un problema con il modello AI, ma il bot è online. Riprova tra poco oppure usa `Jarvis cerca archivio <testo>` per interrogare direttamente lo storico indicizzato.';
+    return buildGeminiUserErrorMessage(error);
   }
 }
 
