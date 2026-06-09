@@ -147,7 +147,7 @@ Se una domanda richiede dati aggiornati ma la chiave non è configurata, Jarvis 
 La ricerca online non è ancora configurata. Serve impostare la chiave API su Render.
 ```
 
-Quando la ricerca è configurata, Jarvis passa a Gemini un blocco `CONTENUTO WEB AGGIORNATO` con risultati, estratti e link. La risposta deve restare breve, includere la fonte principale quando disponibile e avvisare se i risultati non sono sufficienti. Nei log vedrai righe come `[webSearch] query=...`, `[webSearch] provider=...` e `[webSearch:error] ...`.
+Quando la ricerca è configurata, Jarvis passa a Gemini un blocco `CONTENUTO WEB AGGIORNATO` con risultati, estratti e link. La risposta deve restare breve, includere la fonte principale quando disponibile e avvisare se i risultati non sono sufficienti. Se Tavily fallisce, Jarvis risponde con un messaggio chiaro invece del generico errore Discord. Nei log vedrai righe come `[webSearch] query=...`, `[webSearch] provider=...` e `[webSearch:error] ...`.
 
 ## Struttura del progetto
 
@@ -297,6 +297,12 @@ Puoi anche interrogare direttamente l'archivio senza usare Gemini:
 
 ```text
 Jarvis cerca archivio viola
+```
+
+Forma breve equivalente:
+
+```text
+Jarvis archivio viola
 ```
 
 Esempio tecnico:

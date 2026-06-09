@@ -73,6 +73,7 @@ const DELETE_CHANNEL_ARCHIVE_COMMAND = 'jarvis cancella archivio questo canale';
 const REINDEX_CHANNEL_COMMAND = 'jarvis reindicizza questo canale';
 const ARCHIVE_SEARCH_COMMAND_PREFIX = 'jarvis cerca archivio';
 const ARCHIVE_VERIFY_COMMAND_PREFIX = 'jarvis verifica archivio';
+const ARCHIVE_SHORT_COMMAND_PREFIX = 'jarvis archivio';
 const DEFAULT_INDEX_MAX_MESSAGES = 5000;
 const INDEX_MAX_MESSAGES = Number.parseInt(process.env.INDEX_MAX_MESSAGES ?? `${DEFAULT_INDEX_MAX_MESSAGES}`, 10);
 const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX_MESSAGES > 0
@@ -139,7 +140,9 @@ function isArchiveSearchCommand(message) {
   return content.startsWith(`${ARCHIVE_SEARCH_COMMAND_PREFIX} `)
     || content === ARCHIVE_SEARCH_COMMAND_PREFIX
     || content.startsWith(`${ARCHIVE_VERIFY_COMMAND_PREFIX} `)
-    || content === ARCHIVE_VERIFY_COMMAND_PREFIX;
+    || content === ARCHIVE_VERIFY_COMMAND_PREFIX
+    || content.startsWith(`${ARCHIVE_SHORT_COMMAND_PREFIX} `)
+    || content === ARCHIVE_SHORT_COMMAND_PREFIX;
 }
 
 function isArchiveCommand(message) {
@@ -323,6 +326,10 @@ function getArchiveSearchQuery(message) {
     return content.slice(ARCHIVE_VERIFY_COMMAND_PREFIX.length).trim();
   }
 
+  if (normalized.startsWith(ARCHIVE_SHORT_COMMAND_PREFIX)) {
+    return content.slice(ARCHIVE_SHORT_COMMAND_PREFIX.length).trim();
+  }
+
   return content.slice(ARCHIVE_SEARCH_COMMAND_PREFIX.length).trim();
 }
 
@@ -442,6 +449,24 @@ function getCustomReply(prompt) {
       'Messaggio ricevuto: mi parcheggio un attimo in modalità zen.'
     ];
     return replies[Math.floor(Math.random() * replies.length)];
+  }
+
+
+  if (
+    normalized.includes('quali sono i tuoi comandi')
+    || normalized.includes('che comandi hai')
+    || normalized.includes('lista comandi')
+    || normalized.includes('cosa puoi fare')
+  ) {
+    return [
+      'Posso aiutarti così:',
+      '- `Jarvis cerca archivio <testo>` oppure `Jarvis archivio <testo>`: cerco nello storico indicizzato Supabase.',
+      '- `Jarvis stato archivio`: mostro i canali indicizzati (solo admin).',
+      '- `Jarvis indicizza questo canale`: salvo lo storico del canale su Supabase (solo admin).',
+      '- `Jarvis reindicizza questo canale`: cancello e rifaccio il canale corrente (solo admin).',
+      '- Puoi chiedermi procedure interne tipo “tubazione ostruita come lo chiudo?” e prima cerco nell’archivio.',
+      '- Puoi chiedermi dati online/meteo/prezzi e uso Tavily se configurato.'
+    ].join('\n');
   }
 
   return null;
@@ -652,6 +677,7 @@ async function buildPromptWithArchiveContext(prompt) {
       archiveHadResults: true,
       shouldReportMissingArchiveAnswer: false,
       archiveSearchAttempted: true,
+      archiveFallbackReply: formatArchiveResultsForDiscord(search.results),
       prompt: `DOMANDA UTENTE:
 ${prompt}
 
@@ -714,6 +740,7 @@ ISTRUZIONI:
     return {
       usedWeb: true,
       webHadResults: true,
+      webFallbackReply: search.responseText || formatWebResultsForGemini(search),
       prompt: `${prompt}
 
 CONTENUTO WEB AGGIORNATO
@@ -799,7 +826,19 @@ async function askGemini(channelId, prompt) {
       logErrorWithStack('ai:error', 'Errore durante la chiamata a Gemini:', error);
     }
 
-    throw error;
+    if (archivePrompt.archiveHadResults && archivePrompt.archiveFallbackReply) {
+      return `Ho trovato queste informazioni nell'archivio indicizzato, ma Gemini non ha risposto. Ti riporto i risultati grezzi:
+
+${archivePrompt.archiveFallbackReply}`;
+    }
+
+    if (webPrompt.webHadResults && webPrompt.webFallbackReply) {
+      return `${webPrompt.webFallbackReply}
+
+Fonte: risultati Tavily disponibili nei log/contesto.`;
+    }
+
+    return 'Ho avuto un problema con il modello AI, ma il bot è online. Riprova tra poco oppure usa `Jarvis cerca archivio <testo>` per interrogare direttamente lo storico indicizzato.';
   }
 }
 
