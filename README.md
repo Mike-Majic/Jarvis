@@ -193,6 +193,18 @@ Jarvis stato archivio
 
 Jarvis risponderà con il numero di file `channel_*.json` presenti e, per ogni canale indicizzato, mostrerà nome canale, messaggi salvati, allegati trovati e data dell'ultima indicizzazione.
 
+Per cercare direttamente nei JSON locali senza Gemini scrivi:
+
+```text
+Jarvis cerca archivio <testo>
+```
+
+Esempio:
+
+```text
+Jarvis cerca archivio viola
+```
+
 Per cancellare solo l'archivio JSON del canale corrente scrivi:
 
 ```text
@@ -219,7 +231,41 @@ Per preparare lo storico prima di costruire la ricerca:
 3. Attendi il messaggio di completamento con numero messaggi, allegati e percorso file.
 4. Ripeti la stessa operazione nei canali importanti, ad esempio storico, interventi e numeri.
 5. Scrivi `Jarvis stato archivio` per controllare quali canali sono stati salvati e quando sono stati indicizzati.
-6. Se vuoi rifare un canale, entra in quel canale e scrivi `Jarvis reindicizza questo canale`.
+6. Prova una ricerca diretta, ad esempio `Jarvis cerca archivio viola`.
+7. Se vuoi rifare un canale, entra in quel canale e scrivi `Jarvis reindicizza questo canale`.
+
+
+## Ricerca nell'archivio locale
+
+Dopo aver indicizzato uno o più canali, Jarvis può usare i file JSON locali in `data/` come contesto per rispondere alle domande normali.
+
+Esempio:
+
+```text
+Jarvis il colore viola della fibra, che numero è?
+```
+
+Prima di chiamare Gemini, Jarvis cerca nei file `data/channel_*.json`; se trova messaggi pertinenti, aggiunge un blocco di contesto alla richiesta inviata a Gemini. Se non trova nulla, continua a rispondere normalmente senza contesto locale.
+
+Puoi anche interrogare direttamente l'archivio senza usare Gemini:
+
+```text
+Jarvis cerca archivio viola
+```
+
+Questo comando restituisce risultati grezzi trovati nei JSON locali, includendo canale, data, contenuto del messaggio e metadati degli allegati se presenti.
+
+Se `data/` non esiste o non contiene file `channel_*.json`, Jarvis risponde:
+
+```text
+Archivio vuoto. Prima indicizza almeno un canale.
+```
+
+Se la ricerca non trova risultati, Jarvis risponde:
+
+```text
+Non ho trovato risultati nell'archivio.
+```
 
 ### Dati salvati
 

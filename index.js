@@ -9,6 +9,11 @@ import {
   indexChannelById,
   reindexChannelById
 } from './src/discordIndexer.js';
+import {
+  formatArchiveResultsForDiscord,
+  formatArchiveResultsForGemini,
+  searchArchive
+} from './src/archiveSearch.js';
 
 function formatLogPrefix(scope) {
   return `[${new Date().toISOString()}] [${scope}]`;
@@ -59,6 +64,7 @@ const INDEX_CHANNEL_COMMAND = 'jarvis indicizza questo canale';
 const ARCHIVE_STATUS_COMMAND = 'jarvis stato archivio';
 const DELETE_CHANNEL_ARCHIVE_COMMAND = 'jarvis cancella archivio questo canale';
 const REINDEX_CHANNEL_COMMAND = 'jarvis reindicizza questo canale';
+const ARCHIVE_SEARCH_COMMAND_PREFIX = 'jarvis cerca archivio';
 const DEFAULT_INDEX_MAX_MESSAGES = 5000;
 const INDEX_MAX_MESSAGES = Number.parseInt(process.env.INDEX_MAX_MESSAGES ?? `${DEFAULT_INDEX_MAX_MESSAGES}`, 10);
 const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX_MESSAGES > 0
@@ -111,6 +117,11 @@ function isDeleteChannelArchiveCommand(message) {
 
 function isReindexChannelCommand(message) {
   return getNormalizedContent(message) === REINDEX_CHANNEL_COMMAND;
+}
+
+function isArchiveSearchCommand(message) {
+  return getNormalizedContent(message).startsWith(`${ARCHIVE_SEARCH_COMMAND_PREFIX} `)
+    || getNormalizedContent(message) === ARCHIVE_SEARCH_COMMAND_PREFIX;
 }
 
 function isArchiveCommand(message) {
@@ -274,6 +285,51 @@ async function handleReindexChannelCommand(message) {
   }
 }
 
+
+function getArchiveSearchQuery(message) {
+  return (message.content ?? '').trim().slice(ARCHIVE_SEARCH_COMMAND_PREFIX.length).trim();
+}
+
+async function handleArchiveSearchCommand(message) {
+  const query = getArchiveSearchQuery(message);
+
+  if (!query) {
+    await message.reply({
+      content: 'Scrivi cosa cercare dopo il comando. Esempio: `Jarvis cerca archivio viola`.',
+      allowedMentions: { repliedUser: false }
+    });
+    return;
+  }
+
+  try {
+    const search = await searchArchive(query);
+
+    if (search.archiveEmpty) {
+      await message.reply({
+        content: 'Archivio vuoto. Prima indicizza almeno un canale.',
+        allowedMentions: { repliedUser: false }
+      });
+      return;
+    }
+
+    if (search.results.length === 0) {
+      await message.reply({
+        content: 'Non ho trovato risultati nell\'archivio.',
+        allowedMentions: { repliedUser: false }
+      });
+      return;
+    }
+
+    await replyWithChunks(message, formatArchiveResultsForDiscord(search.results));
+  } catch (error) {
+    logError('archive:search', "Errore durante la ricerca nell'archivio:", error);
+    await message.reply({
+      content: "Errore durante la ricerca nell'archivio locale. Controlla i log del bot.",
+      allowedMentions: { repliedUser: false }
+    });
+  }
+}
+
 async function handleArchiveCommand(message) {
   if (isIndexChannelCommand(message)) {
     await handleIndexChannelCommand(message);
@@ -386,13 +442,35 @@ function isGeminiQuotaOrApiKeyError(error) {
     || message.includes('403');
 }
 
+async function buildPromptWithArchiveContext(prompt) {
+  try {
+    const search = await searchArchive(prompt);
+
+    if (search.archiveEmpty || search.results.length === 0) {
+      return prompt;
+    }
+
+    const context = formatArchiveResultsForGemini(search.results);
+    return `${prompt}
+
+Contesto trovato nell'archivio Discord:
+${context}
+
+Usa il contesto sopra se è pertinente alla domanda. Se il contesto contiene la risposta, rispondi in modo diretto e sintetico.`;
+  } catch (error) {
+    logError('archive:search', "Errore durante la ricerca del contesto nell'archivio:", error);
+    return prompt;
+  }
+}
+
 async function askGemini(channelId, prompt) {
   const history = getChannelHistory(channelId);
+  const promptWithArchiveContext = await buildPromptWithArchiveContext(prompt);
 
   try {
     const response = await gemini.models.generateContent({
       model: GEMINI_MODEL,
-      contents: convertHistoryToGeminiContents(history, prompt),
+      contents: convertHistoryToGeminiContents(history, promptWithArchiveContext),
       config: {
         systemInstruction:
           'Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico e utile. Se non sai qualcosa, dillo chiaramente e chiedi dettagli.',
@@ -459,6 +537,11 @@ client.on(Events.MessageCreate, async (message) => {
 
   if (isArchiveCommand(message)) {
     await handleArchiveCommand(message);
+    return;
+  }
+
+  if (isArchiveSearchCommand(message)) {
+    await handleArchiveSearchCommand(message);
     return;
   }
 

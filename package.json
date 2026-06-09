@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check src/discordIndexer.js"
+    "check": "node --check index.js && node --check src/discordIndexer.js && node --check src/archiveSearch.js"
   },
   "keywords": [
     "discord",
