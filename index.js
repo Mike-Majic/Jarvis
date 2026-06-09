@@ -65,6 +65,7 @@ const ARCHIVE_STATUS_COMMAND = 'jarvis stato archivio';
 const DELETE_CHANNEL_ARCHIVE_COMMAND = 'jarvis cancella archivio questo canale';
 const REINDEX_CHANNEL_COMMAND = 'jarvis reindicizza questo canale';
 const ARCHIVE_SEARCH_COMMAND_PREFIX = 'jarvis cerca archivio';
+const ARCHIVE_VERIFY_COMMAND_PREFIX = 'jarvis verifica archivio';
 const DEFAULT_INDEX_MAX_MESSAGES = 5000;
 const INDEX_MAX_MESSAGES = Number.parseInt(process.env.INDEX_MAX_MESSAGES ?? `${DEFAULT_INDEX_MAX_MESSAGES}`, 10);
 const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX_MESSAGES > 0
@@ -120,8 +121,11 @@ function isReindexChannelCommand(message) {
 }
 
 function isArchiveSearchCommand(message) {
-  return getNormalizedContent(message).startsWith(`${ARCHIVE_SEARCH_COMMAND_PREFIX} `)
-    || getNormalizedContent(message) === ARCHIVE_SEARCH_COMMAND_PREFIX;
+  const content = getNormalizedContent(message);
+  return content.startsWith(`${ARCHIVE_SEARCH_COMMAND_PREFIX} `)
+    || content === ARCHIVE_SEARCH_COMMAND_PREFIX
+    || content.startsWith(`${ARCHIVE_VERIFY_COMMAND_PREFIX} `)
+    || content === ARCHIVE_VERIFY_COMMAND_PREFIX;
 }
 
 function isArchiveCommand(message) {
@@ -287,7 +291,14 @@ async function handleReindexChannelCommand(message) {
 
 
 function getArchiveSearchQuery(message) {
-  return (message.content ?? '').trim().slice(ARCHIVE_SEARCH_COMMAND_PREFIX.length).trim();
+  const content = (message.content ?? '').trim();
+  const normalized = content.toLowerCase();
+
+  if (normalized.startsWith(ARCHIVE_VERIFY_COMMAND_PREFIX)) {
+    return content.slice(ARCHIVE_VERIFY_COMMAND_PREFIX.length).trim();
+  }
+
+  return content.slice(ARCHIVE_SEARCH_COMMAND_PREFIX.length).trim();
 }
 
 async function handleArchiveSearchCommand(message) {
@@ -372,6 +383,126 @@ function cleanUserPrompt(message) {
   return prompt || 'Rispondi come assistente AI in italiano.';
 }
 
+function normalizeForRules(value) {
+  return String(value ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function getCustomReply(prompt) {
+  const normalized = normalizeForRules(prompt);
+
+  if (
+    normalized.includes('chi ti ha creato')
+    || normalized.includes('chi e il tuo creatore')
+    || normalized.includes('da chi sei stato creato')
+  ) {
+    return 'Mi ha creato Mike, detto anche Majic. Il mio boss.';
+  }
+
+  const lightRoastPatterns = [
+    /va a cagar/,
+    /vaffanculo/,
+    /vattene/,
+    /sei scemo/
+  ];
+
+  if (lightRoastPatterns.some((pattern) => pattern.test(normalized))) {
+    const replies = [
+      'Ok, vado in bagno e dirò: la stronzata.',
+      'Ricevuto, mi metto in modalità bagno operativo.',
+      'Va bene, attivo la modalità permaloso livello tostapane.',
+      'Capito capo, faccio un giro e torno più brillante di prima.',
+      'Messaggio ricevuto: mi parcheggio un attimo in modalità zen.'
+    ];
+    return replies[Math.floor(Math.random() * replies.length)];
+  }
+
+  return null;
+}
+
+function shouldUseArchive(prompt) {
+  const normalized = normalizeForRules(prompt);
+  const archiveTerms = [
+    'procedura',
+    'storico',
+    'intervento',
+    'numero',
+    'telefono',
+    'guasto',
+    'modem',
+    'seriale',
+    'fibra',
+    'colori',
+    'splitter',
+    'delivery',
+    'tim',
+    'fastweb',
+    'vodafone',
+    'wind',
+    'iliad',
+    'sky',
+    'open fiber',
+    'causa',
+    'causale',
+    'a24',
+    'a14',
+    'permuta',
+    'ont',
+    'onu',
+    'armadio',
+    'centrale',
+    'app',
+    'tecnico',
+    'materiale',
+    'magazzino'
+  ];
+
+  return archiveTerms.some((term) => {
+    if (term.includes(' ')) return normalized.includes(term);
+    return new RegExp(`(^|[^a-z0-9])${term}([^a-z0-9]|$)`, 'i').test(normalized);
+  });
+}
+
+function isClearlyTechnicalArchiveQuestion(prompt) {
+  const normalized = normalizeForRules(prompt);
+  const strongTerms = [
+    'procedura',
+    'storico',
+    'intervento',
+    'guasto',
+    'modem',
+    'seriale',
+    'fibra',
+    'colori',
+    'splitter',
+    'delivery',
+    'tim',
+    'fastweb',
+    'vodafone',
+    'wind',
+    'iliad',
+    'sky',
+    'open fiber',
+    'causale',
+    'a24',
+    'a14',
+    'permuta',
+    'ont',
+    'onu',
+    'armadio',
+    'centrale',
+    'tecnico',
+    'materiale',
+    'magazzino'
+  ];
+
+  if (strongTerms.some((term) => normalized.includes(term))) return true;
+
+  return /\b(numero|telefono)\b/.test(normalized) && /\d{2,}/.test(normalized);
+}
+
 function getChannelHistory(channelId) {
   if (!channelMemory.has(channelId)) {
     channelMemory.set(channelId, []);
@@ -443,15 +574,28 @@ function isGeminiQuotaOrApiKeyError(error) {
 }
 
 async function buildPromptWithArchiveContext(prompt) {
+  if (!shouldUseArchive(prompt)) {
+    return { prompt, usedArchive: false, archiveHadResults: false };
+  }
+
   try {
     const search = await searchArchive(prompt);
 
     if (search.archiveEmpty || search.results.length === 0) {
-      return prompt;
+      return {
+        prompt,
+        usedArchive: true,
+        archiveHadResults: false,
+        shouldReportMissingArchiveAnswer: isClearlyTechnicalArchiveQuestion(prompt)
+      };
     }
 
     const context = formatArchiveResultsForGemini(search.results);
-    return `DOMANDA UTENTE:
+    return {
+      usedArchive: true,
+      archiveHadResults: true,
+      shouldReportMissingArchiveAnswer: false,
+      prompt: `DOMANDA UTENTE:
 ${prompt}
 
 CONTENUTO ARCHIVIO DISCORD
@@ -461,24 +605,29 @@ ISTRUZIONI:
 - Usa SOLO il CONTENUTO ARCHIVIO DISCORD per rispondere se è pertinente alla domanda.
 - Se il contenuto archivio contiene la risposta, rispondi in modo diretto usando quei dati.
 - Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e il contenuto archivio non contiene la risposta, di' che non trovi la risposta nell'archivio.
-- Non usare conoscenza generale se contraddice o sostituisce l'archivio.`;
+- Non usare conoscenza generale se contraddice o sostituisce l'archivio.`
+    };
   } catch (error) {
     logError('archive:search', "Errore durante la ricerca del contesto nell'archivio:", error);
-    return prompt;
+    return { prompt, usedArchive: false, archiveHadResults: false };
   }
 }
 
 async function askGemini(channelId, prompt) {
   const history = getChannelHistory(channelId);
-  const promptWithArchiveContext = await buildPromptWithArchiveContext(prompt);
+  const archivePrompt = await buildPromptWithArchiveContext(prompt);
+
+  if (archivePrompt.shouldReportMissingArchiveAnswer) {
+    return 'Non ho trovato questa informazione nell\'archivio.';
+  }
 
   try {
     const response = await gemini.models.generateContent({
       model: GEMINI_MODEL,
-      contents: convertHistoryToGeminiContents(history, promptWithArchiveContext),
+      contents: convertHistoryToGeminiContents(history, archivePrompt.prompt),
       config: {
         systemInstruction:
-          `Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico e utile. Se è presente un blocco CONTENUTO ARCHIVIO DISCORD, devi dare priorità assoluta a quello. Non usare conoscenza generale se contraddice l'archivio. Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e l'archivio ha risultati, rispondi solo con i dati trovati. Se il contesto non contiene la risposta, di' chiaramente che non trovi la risposta nell'archivio.`,
+          `Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico, naturale e simpatico. Per messaggi normali conversa liberamente senza citare l'archivio. Se è presente un blocco CONTENUTO ARCHIVIO DISCORD, devi dare priorità assoluta a quello. Non usare conoscenza generale se contraddice l'archivio. Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e l'archivio ha risultati, rispondi solo con i dati trovati. Se il contesto non contiene la risposta, di' chiaramente che non trovi la risposta nell'archivio.`,
         temperature: 0.4
       }
     });
@@ -557,7 +706,8 @@ client.on(Events.MessageCreate, async (message) => {
   try {
     await message.channel.sendTyping();
 
-    const reply = await askGemini(message.channel.id, prompt);
+    const customReply = getCustomReply(prompt);
+    const reply = customReply ?? await askGemini(message.channel.id, prompt);
 
     rememberMessage(message.channel.id, 'user', prompt);
     rememberMessage(message.channel.id, 'assistant', reply);

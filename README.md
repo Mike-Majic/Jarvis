@@ -199,6 +199,12 @@ Per cercare direttamente nei JSON locali senza Gemini scrivi:
 Jarvis cerca archivio <testo>
 ```
 
+Puoi usare anche l'alias:
+
+```text
+Jarvis verifica archivio <testo>
+```
+
 Esempio:
 
 ```text
@@ -237,7 +243,7 @@ Per preparare lo storico prima di costruire la ricerca:
 
 ## Ricerca nell'archivio locale
 
-Dopo aver indicizzato uno o più canali, Jarvis può usare i file JSON locali in `data/` come contesto per rispondere alle domande normali.
+Dopo aver indicizzato uno o più canali, Jarvis può usare i file JSON locali in `data/` come contesto, ma solo quando la domanda sembra davvero legata a dati operativi, procedure, storico, numerazioni o ricerca tecnica.
 
 Esempio:
 
@@ -245,12 +251,20 @@ Esempio:
 Jarvis il colore viola della fibra, che numero è?
 ```
 
-Prima di chiamare Gemini, Jarvis cerca nei file `data/channel_*.json`; se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; se la domanda riguarda procedure, numerazioni o storico e il contesto non contiene la risposta, deve dire che non trova la risposta nell'archivio.
+Per le domande tecniche Jarvis cerca nei file `data/channel_*.json` prima di chiamare Gemini; se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; se la domanda è chiaramente tecnica e l'archivio non contiene risultati, può rispondere che non trova l'informazione nell'archivio.
+
+Per i messaggi normali, ad esempio `Jarvis fa caldo`, `Jarvis come stai`, `Jarvis annamo bene` o battute/sfottò, Jarvis non cerca nell'archivio e risponde in modo naturale con Gemini o con risposte personalizzate.
 
 Puoi anche interrogare direttamente l'archivio senza usare Gemini:
 
 ```text
 Jarvis cerca archivio viola
+```
+
+oppure:
+
+```text
+Jarvis verifica archivio viola
 ```
 
 Questo comando restituisce risultati grezzi trovati nei JSON locali, includendo canale, data, contenuto del messaggio e metadati degli allegati se presenti.
@@ -313,7 +327,7 @@ Per ora Jarvis:
 - non scarica gli allegati;
 - non legge PDF, Excel o Word;
 - non usa database;
-- non invia i dati indicizzati a Gemini;
+- invia a Gemini solo piccoli estratti testuali dei JSON quando una domanda tecnica trova risultati pertinenti;
 - salva solo un archivio JSON locale per canale.
 
 La scansione usa pause tra i blocchi e tentativi automatici in caso di errori temporanei o rate limit.
