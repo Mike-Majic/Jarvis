@@ -19,7 +19,7 @@ Non usa comandi slash: gli utenti possono scrivere normalmente nel canale, ad es
 - Mantiene una piccola memoria conversazionale per canale, salvata solo in RAM.
 - Indicizza messaggi e metadati degli allegati su Supabase nella tabella `discord_messages`.
 - Cerca nello storico Supabase per usare i risultati come contesto nelle domande tecniche.
-- Cerca online dati aggiornati con Brave Search API o Tavily API quando la domanda lo richiede.
+- Cerca online dati aggiornati con Tavily Search API quando la domanda lo richiede.
 - Divide automaticamente le risposte troppo lunghe in più messaggi compatibili con Discord.
 - Gestisce gli errori senza far crashare il processo.
 
@@ -37,7 +37,7 @@ Jarvis usa il pacchetto ufficiale `@google/genai` per comunicare con Gemini API 
 - Node.js 18 o superiore.
 - Un bot Discord creato nel [Discord Developer Portal](https://discord.com/developers/applications).
 - Una chiave API Gemini.
-- Una chiave Brave Search API oppure Tavily API per la ricerca online aggiornata.
+- Una chiave Tavily API per la ricerca online aggiornata.
 - Un progetto Supabase con la tabella `discord_messages` già creata.
 
 ## Installazione
@@ -64,9 +64,7 @@ GEMINI_API_KEY=la_tua_chiave_gemini
 GEMINI_MODEL=gemini-2.5-flash
 SUPABASE_URL=https://il-tuo-progetto.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=la_tua_service_role_key
-WEB_SEARCH_PROVIDER=brave
-BRAVE_SEARCH_API_KEY=la_tua_chiave_brave
-TAVILY_API_KEY=
+TAVILY_API_KEY=la_tua_chiave_tavily
 INDEX_MAX_MESSAGES=5000
 ```
 
@@ -137,17 +135,9 @@ Jarvis può usare una ricerca web generica prima di chiamare Gemini quando la do
 - luoghi, indirizzi, orari o eventi;
 - risultati sportivi, classifiche o calendari.
 
-Provider supportati:
+Provider supportato:
 
 ```env
-WEB_SEARCH_PROVIDER=brave
-BRAVE_SEARCH_API_KEY=la_tua_chiave_brave
-```
-
-oppure:
-
-```env
-WEB_SEARCH_PROVIDER=tavily
 TAVILY_API_KEY=la_tua_chiave_tavily
 ```
 
@@ -172,7 +162,7 @@ Quando la ricerca è configurata, Jarvis passa a Gemini un blocco `CONTENUTO WEB
 │   ├── discordIndexer.js # Indicizzazione Discord su Supabase
 │   ├── supabaseClient.js # Client Supabase lato server
 │   └── tools/
-│       ├── webSearch.js  # Ricerca online Brave/Tavily
+│       ├── webSearch.js  # Ricerca online Tavily
 │       └── weather.js    # Helper meteo basato sulla ricerca web
 └── README.md             # Istruzioni del progetto
 ```

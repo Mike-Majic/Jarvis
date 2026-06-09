@@ -1,12 +1,12 @@
-const DEFAULT_PROVIDER = 'brave';
+import { tavily } from '@tavily/core';
+
 const DEFAULT_MAX_RESULTS = 5;
 const WEB_SEARCH_TIMEOUT_MS = 8_000;
 
 export class WebSearchConfigError extends Error {
-  constructor(provider) {
-    super(`Ricerca online non configurata per provider: ${provider}`);
+  constructor() {
+    super('Ricerca online non configurata');
     this.name = 'WebSearchConfigError';
-    this.provider = provider;
   }
 }
 
@@ -29,93 +29,45 @@ function normalizeText(value) {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
-function getProvider() {
-  return normalizeText(process.env.WEB_SEARCH_PROVIDER || DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
+function getTavilyApiKey() {
+  return process.env.TAVILY_API_KEY;
 }
 
-function getProviderApiKey(provider) {
-  if (provider === 'tavily') return process.env.TAVILY_API_KEY;
-  return process.env.BRAVE_SEARCH_API_KEY;
-}
-
-function assertConfigured(provider) {
-  if (!getProviderApiKey(provider)) {
-    throw new WebSearchConfigError(provider);
+function assertConfigured() {
+  if (!getTavilyApiKey()) {
+    throw new WebSearchConfigError();
   }
 }
 
-async function fetchJsonWithTimeout(url, options = {}) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), WEB_SEARCH_TIMEOUT_MS);
+function withTimeout(promise, timeoutMs) {
+  let timeout;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeout = setTimeout(() => reject(new Error(`Timeout ricerca online dopo ${timeoutMs} ms`)), timeoutMs);
+  });
 
-  try {
-    const response = await fetch(url, { ...options, signal: controller.signal });
-    const bodyText = await response.text();
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} ${response.statusText}: ${bodyText.slice(0, 500)}`);
-    }
-
-    return bodyText ? JSON.parse(bodyText) : {};
-  } finally {
-    clearTimeout(timeout);
-  }
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeout));
 }
 
 function toSearchResult(result) {
   return {
     title: result.title ?? 'Risultato senza titolo',
     url: result.url ?? null,
-    snippet: result.description ?? result.content ?? result.snippet ?? '',
-    publishedAt: result.age ?? result.published_date ?? result.publishedAt ?? null
+    snippet: result.content ?? result.rawContent ?? result.description ?? '',
+    score: result.score ?? null,
+    publishedAt: result.publishedDate ?? result.published_date ?? result.publishedAt ?? null
   };
 }
 
-async function searchWithBrave(query, maxResults) {
-  const apiKey = process.env.BRAVE_SEARCH_API_KEY;
-  const url = new URL('https://api.search.brave.com/res/v1/web/search');
-  url.searchParams.set('q', query);
-  url.searchParams.set('count', String(maxResults));
-  url.searchParams.set('country', 'IT');
-  url.searchParams.set('search_lang', 'it');
-  url.searchParams.set('safesearch', 'moderate');
+function buildSyntheticAnswer(answer, results) {
+  if (answer) return answer;
 
-  const data = await fetchJsonWithTimeout(url, {
-    headers: {
-      Accept: 'application/json',
-      'X-Subscription-Token': apiKey
-    }
-  });
+  if (results.length === 0) {
+    return 'Non ho trovato risultati online sufficienti.';
+  }
 
-  const webResults = data.web?.results ?? [];
-  const newsResults = data.news?.results ?? [];
-
-  return [...webResults, ...newsResults].slice(0, maxResults).map(toSearchResult);
-}
-
-async function searchWithTavily(query, maxResults) {
-  const apiKey = process.env.TAVILY_API_KEY;
-  const data = await fetchJsonWithTimeout('https://api.tavily.com/search', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      query,
-      search_depth: 'basic',
-      max_results: maxResults,
-      include_answer: true,
-      include_raw_content: false
-    })
-  });
-
-  const answerResult = data.answer
-    ? [{ title: 'Risposta Tavily', url: null, content: data.answer }]
-    : [];
-  const results = data.results ?? [];
-
-  return [...answerResult, ...results].slice(0, maxResults).map(toSearchResult);
+  const firstResult = results[0];
+  const source = firstResult.url ? ` Fonte: ${firstResult.url}` : '';
+  return `${firstResult.snippet || firstResult.title}${source}`.trim();
 }
 
 export function shouldUseWebSearch(prompt) {
@@ -136,31 +88,34 @@ export function shouldUseWebSearch(prompt) {
 }
 
 export async function searchWeb(query, options = {}) {
-  const provider = getProvider();
   const maxResults = options.maxResults ?? DEFAULT_MAX_RESULTS;
 
   logInfo('webSearch', `query=${query}`);
-  logInfo('webSearch', `provider=${provider}`);
+  logInfo('webSearch', 'provider=tavily');
 
   try {
-    assertConfigured(provider);
+    assertConfigured();
 
-    if (provider === 'tavily') {
-      return {
-        provider,
-        query,
-        results: await searchWithTavily(query, maxResults)
-      };
-    }
+    const client = tavily({ apiKey: getTavilyApiKey() });
+    const response = await withTimeout(
+      client.search(query, {
+        searchDepth: 'basic',
+        maxResults,
+        includeAnswer: true,
+        includeRawContent: false
+      }),
+      WEB_SEARCH_TIMEOUT_MS
+    );
 
-    if (provider !== 'brave') {
-      throw new Error(`Provider ricerca online non supportato: ${provider}`);
-    }
+    const results = (response.results ?? []).slice(0, maxResults).map(toSearchResult);
 
     return {
-      provider,
+      provider: 'tavily',
       query,
-      results: await searchWithBrave(query, maxResults)
+      answer: response.answer ?? null,
+      responseText: buildSyntheticAnswer(response.answer, results),
+      results,
+      sources: results.map((result) => ({ title: result.title, url: result.url })).filter((source) => source.url)
     };
   } catch (error) {
     logError('webSearch:error', error?.stack ?? error);
@@ -169,11 +124,16 @@ export async function searchWeb(query, options = {}) {
 }
 
 export function formatWebResultsForGemini(search) {
-  if (!search?.results?.length) return '';
+  if (!search) return '';
 
-  return search.results.map((result, index) => {
-    const source = result.url ? `\nLink: ${result.url}` : '';
-    const publishedAt = result.publishedAt ? `\nData/età risultato: ${result.publishedAt}` : '';
-    return `[Fonte ${index + 1}]\nTitolo: ${result.title}${source}${publishedAt}\nEstratto:\n${result.snippet || 'Estratto non disponibile'}`;
-  }).join('\n\n');
+  const answer = search.responseText ? `Risposta sintetica Tavily:\n${search.responseText}\n\n` : '';
+  const sources = search.results?.length
+    ? search.results.map((result, index) => {
+      const source = result.url ? `\nLink: ${result.url}` : '';
+      const publishedAt = result.publishedAt ? `\nData risultato: ${result.publishedAt}` : '';
+      return `[Fonte ${index + 1}]\nTitolo: ${result.title}${source}${publishedAt}\nEstratto:\n${result.snippet || 'Estratto non disponibile'}`;
+    }).join('\n\n')
+    : 'Nessuna fonte disponibile.';
+
+  return `${answer}${sources}`;
 }
