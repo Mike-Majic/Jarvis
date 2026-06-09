@@ -1,0 +1,28 @@
+{
+  "name": "jarvis-discord-ai-bot",
+  "version": "1.0.0",
+  "description": "Bot Discord AI in italiano basato su Node.js, discord.js e Gemini API.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js && node --check src/supabaseClient.js && node --check src/discordIndexer.js && node --check src/archiveSearch.js && node --check src/tools/webSearch.js && node --check src/tools/weather.js"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "ai",
+    "jarvis",
+    "gemini",
+    "google"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "discord.js": "^14.19.3",
+    "dotenv": "^16.5.0",
+    "@supabase/supabase-js": "^2.45.4",
+    "@tavily/core": "^0.5.6"
+  }
+}
