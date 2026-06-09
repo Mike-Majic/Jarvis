@@ -358,7 +358,7 @@ async function handleArchiveSearchCommand(message) {
 
     await replyWithChunks(message, formatArchiveResultsForDiscord(search.results));
   } catch (error) {
-    logError('archive:search', "Errore durante la ricerca nell'archivio:", error);
+    logErrorWithStack('archiveSearch:error', "Errore durante la ricerca nell'archivio:", error);
     await message.reply({
       content: buildSupabaseConfigErrorMessage(error) ?? "Errore durante la ricerca nell'archivio Supabase. Controlla i log del bot.",
       allowedMentions: { repliedUser: false }
@@ -453,6 +453,12 @@ function shouldUseArchive(prompt) {
     'procedura',
     'storico',
     'intervento',
+    'lavorazione',
+    'ticket',
+    'pratica',
+    'remedy',
+    'flower',
+    'assurance',
     'tubazione',
     'ostruita',
     'ostruito',
@@ -478,6 +484,7 @@ function shouldUseArchive(prompt) {
     'causale',
     'a24',
     'a14',
+    'ko',
     'permuta',
     'ont',
     'onu',
@@ -488,6 +495,10 @@ function shouldUseArchive(prompt) {
     'materiale',
     'magazzino'
   ];
+
+  if (normalized.includes('come lo chiudo') || normalized.includes('come chiudo')) {
+    return true;
+  }
 
   return archiveTerms.some((term) => {
     if (term.includes(' ')) return normalized.includes(term);
@@ -501,6 +512,12 @@ function isClearlyTechnicalArchiveQuestion(prompt) {
     'procedura',
     'storico',
     'intervento',
+    'lavorazione',
+    'ticket',
+    'pratica',
+    'remedy',
+    'flower',
+    'assurance',
     'tubazione',
     'ostruita',
     'ostruito',
@@ -523,6 +540,7 @@ function isClearlyTechnicalArchiveQuestion(prompt) {
     'causale',
     'a24',
     'a14',
+    'ko',
     'permuta',
     'ont',
     'onu',
@@ -532,6 +550,8 @@ function isClearlyTechnicalArchiveQuestion(prompt) {
     'materiale',
     'magazzino'
   ];
+
+  if (normalized.includes('come lo chiudo') || normalized.includes('come chiudo')) return true;
 
   if (strongTerms.some((term) => normalized.includes(term))) return true;
 
@@ -610,7 +630,7 @@ function isGeminiQuotaOrApiKeyError(error) {
 
 async function buildPromptWithArchiveContext(prompt) {
   if (!shouldUseArchive(prompt)) {
-    return { prompt, usedArchive: false, archiveHadResults: false };
+    return { prompt, usedArchive: false, archiveHadResults: false, archiveSearchAttempted: false };
   }
 
   try {
@@ -621,7 +641,8 @@ async function buildPromptWithArchiveContext(prompt) {
         prompt,
         usedArchive: true,
         archiveHadResults: false,
-        shouldReportMissingArchiveAnswer: isClearlyTechnicalArchiveQuestion(prompt)
+        shouldReportMissingArchiveAnswer: isClearlyTechnicalArchiveQuestion(prompt),
+        archiveSearchAttempted: true
       };
     }
 
@@ -630,6 +651,7 @@ async function buildPromptWithArchiveContext(prompt) {
       usedArchive: true,
       archiveHadResults: true,
       shouldReportMissingArchiveAnswer: false,
+      archiveSearchAttempted: true,
       prompt: `DOMANDA UTENTE:
 ${prompt}
 
@@ -643,13 +665,19 @@ ISTRUZIONI:
 - Non usare conoscenza generale se contraddice o sostituisce l'archivio.`
     };
   } catch (error) {
-    logError('archive:search', "Errore durante la ricerca del contesto nell'archivio:", error);
-    return { prompt, usedArchive: false, archiveHadResults: false };
+    logErrorWithStack('archiveSearch:error', "Errore durante la ricerca del contesto nell'archivio:", error);
+    return {
+      prompt,
+      usedArchive: false,
+      archiveHadResults: false,
+      archiveSearchAttempted: true,
+      archiveSearchError: true
+    };
   }
 }
 
-async function buildPromptWithWebContext(prompt, originalPrompt) {
-  if (!shouldUseWebSearch(originalPrompt)) {
+async function buildPromptWithWebContext(prompt, originalPrompt, options = {}) {
+  if (!options.force && !shouldUseWebSearch(originalPrompt)) {
     return { prompt, usedWeb: false };
   }
 
@@ -724,12 +752,16 @@ async function askGemini(channelId, prompt) {
   const history = getChannelHistory(channelId);
   const archivePrompt = await buildPromptWithArchiveContext(prompt);
   const needsWebSearch = shouldUseWebSearch(prompt);
+  const shouldFallbackToWeb = !archivePrompt.archiveHadResults
+    && (needsWebSearch || archivePrompt.archiveSearchAttempted || archivePrompt.shouldReportMissingArchiveAnswer || archivePrompt.archiveSearchError);
 
-  if (archivePrompt.shouldReportMissingArchiveAnswer && !needsWebSearch) {
-    return 'Non ho trovato questa informazione nell\'archivio.';
+  if (archivePrompt.shouldReportMissingArchiveAnswer && !shouldFallbackToWeb) {
+    return "Non ho trovato questa informazione nell'archivio.";
   }
 
-  const webPrompt = await buildPromptWithWebContext(archivePrompt.prompt, prompt);
+  const webPrompt = shouldFallbackToWeb
+    ? await buildPromptWithWebContext(archivePrompt.prompt, prompt, { force: true })
+    : { prompt: archivePrompt.prompt, usedWeb: false };
 
   if (webPrompt.webConfigMissing) {
     return 'La ricerca online non è ancora configurata. Serve impostare la chiave API su Render.';
@@ -749,9 +781,9 @@ async function askGemini(channelId, prompt) {
     return response.text?.trim() || 'Mi dispiace, non sono riuscito a generare una risposta.';
   } catch (error) {
     if (isGeminiQuotaOrApiKeyError(error)) {
-      logError('gemini', 'Errore Gemini API key/quota:', error);
+      logErrorWithStack('ai:error', 'Errore Gemini API key/quota:', error);
     } else {
-      logError('gemini', 'Errore durante la chiamata a Gemini:', error);
+      logErrorWithStack('ai:error', 'Errore durante la chiamata a Gemini:', error);
     }
 
     throw error;
@@ -923,7 +955,7 @@ client.on(Events.MessageCreate, async (message) => {
       await message.reply({ content: chunk, allowedMentions: { repliedUser: false } });
     }
   } catch (error) {
-    logError('discord:message', 'Errore durante la gestione del messaggio:', error);
+    logErrorWithStack('ai:error', 'Errore durante la gestione del messaggio:', error);
 
     try {
       await message.reply({
@@ -931,7 +963,7 @@ client.on(Events.MessageCreate, async (message) => {
         allowedMentions: { repliedUser: false }
       });
     } catch (replyError) {
-      logError('discord:message', 'Errore durante l\'invio del messaggio di errore:', replyError);
+      logErrorWithStack('ai:error', 'Errore durante l\'invio del messaggio di errore:', replyError);
     }
   }
 });

@@ -289,7 +289,7 @@ Esempio:
 Jarvis il colore viola della fibra, che numero è?
 ```
 
-Per le domande tecniche Jarvis analizza la frase, genera più query di ricerca e cerca su Supabase nella colonna `content` prima di chiamare Gemini. Se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; se la domanda è chiaramente tecnica e l'archivio non contiene risultati, può rispondere che non trova l'informazione nell'archivio.
+Per le domande tecniche o operative Jarvis analizza la frase, genera più query di ricerca e cerca sempre prima su Supabase nella colonna `content` prima di chiamare Gemini o la ricerca online. Questo vale per procedure, guasti, lavorazioni, causali, chiusura ticket e attività tecniche come `tubazione ostruita`, `come lo chiudo`, `delivery`, `assurance`, `permuta`, `KO`, `Remedy` o `Flower`. Se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini e non usa Tavily per sostituire quei dati. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; solo se l'archivio non trova risultati può passare alla ricerca online.
 
 Per i messaggi normali, ad esempio `Jarvis fa caldo`, `Jarvis come stai`, `Jarvis annamo bene` o battute/sfottò, Jarvis non cerca nell'archivio e risponde in modo naturale con Gemini o con risposte personalizzate.
 
