@@ -687,6 +687,37 @@ function buildGeminiUserErrorMessage(error) {
   return 'Ho avuto un problema temporaneo con Gemini. Il bot è online: riprova tra poco oppure usa `Jarvis archivio <testo>` per interrogare direttamente lo storico indicizzato.';
 }
 
+
+function getLocalFallbackReply(prompt, error) {
+  const normalized = normalizeForRules(prompt);
+
+  if (!(isGeminiOverloadedError(error) || isGeminiQuotaExceededError(error))) {
+    return null;
+  }
+
+  if (normalized.includes('dimmi qualcosa di intelligente')) {
+    return 'Te ne dico una intelligente anche senza Gemini: se una cosa si rompe spesso, non serve solo ripararla meglio; serve capire perché continua a rompersi. È lì che inizi a risparmiare tempo davvero.';
+  }
+
+  if (normalized.includes('dimmi qualcosa di bello')) {
+    return 'Qualcosa di bello: anche nelle giornate storte, se riesci a far sorridere qualcuno hai già sistemato un pezzetto del mondo. Piccolo, ma reale.';
+  }
+
+  if (normalized.includes('come sei utile') || normalized.includes('sei utile')) {
+    return 'Sono utile quando mi dai contesto: posso cercare nello storico indicizzato, riassumere procedure, aiutarti a scrivere risposte e controllare info online. Se Gemini fa i capricci, io resto comunque operativo sulle funzioni base.';
+  }
+
+  if (normalized.includes('nico') && (normalized.includes('prendere per culo') || normalized.includes('pippetta'))) {
+    return 'Risposta elegante per Nico: “Tranquillo, la parte tecnica la sai. Per quella amministrativa facciamo come gli aggiornamenti: prima o poi arriva anche a te.” 😄';
+  }
+
+  if (normalized.includes('collega') && (normalized.includes('prendere per culo') || normalized.includes('pippetta'))) {
+    return 'Gliela direi leggera: “Sei un tecnico in modalità beta: funzioni, ma ogni tanto serve una patch amministrativa.” 😄';
+  }
+
+  return 'Gemini ora è pieno o in quota, ma io non mollo: posso comunque aiutarti con archivio (`Jarvis archivio <testo>`), comandi, risposte brevi e ricerche online se Tavily è configurato.';
+}
+
 async function buildPromptWithArchiveContext(prompt) {
   if (!shouldUseArchive(prompt)) {
     return { prompt, usedArchive: false, archiveHadResults: false, archiveSearchAttempted: false };
@@ -818,6 +849,29 @@ ISTRUZIONI:
   }
 }
 
+async function generateGeminiContentWithRetry(request) {
+  const maxAttempts = 2;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await gemini.models.generateContent(request);
+    } catch (error) {
+      lastError = error;
+
+      if (!isGeminiOverloadedError(error) || attempt === maxAttempts) {
+        throw error;
+      }
+
+      const delayMs = 1500 * attempt;
+      logWarn('ai:retry', `Gemini sovraccarico, ritento tra ${delayMs} ms (tentativo ${attempt + 1}/${maxAttempts})...`);
+      await wait(delayMs);
+    }
+  }
+
+  throw lastError;
+}
+
 async function askGemini(channelId, prompt) {
   const history = getChannelHistory(channelId);
   const archivePrompt = await buildPromptWithArchiveContext(prompt);
@@ -842,7 +896,7 @@ async function askGemini(channelId, prompt) {
   }
 
   try {
-    const response = await gemini.models.generateContent({
+    const response = await generateGeminiContentWithRetry({
       model: GEMINI_MODEL,
       contents: convertHistoryToGeminiContents(history, webPrompt.prompt),
       config: {
@@ -871,6 +925,9 @@ ${archivePrompt.archiveFallbackReply}`;
 
 Fonte: risultati Tavily disponibili nei log/contesto.`;
     }
+
+    const localFallbackReply = getLocalFallbackReply(prompt, error);
+    if (localFallbackReply) return localFallbackReply;
 
     return buildGeminiUserErrorMessage(error);
   }

@@ -200,7 +200,7 @@ Se nei log Render compaiono errori Gemini come:
 - `429 RESOURCE_EXHAUSTED`;
 - `Quota exceeded`;
 
-significa che il bot Discord è online, ma Google Gemini non sta accettando la richiesta in quel momento. Jarvis risponde con un messaggio chiaro invece del generico errore e consiglia di riprovare più tardi o usare `Jarvis archivio <testo>` per interrogare direttamente Supabase.
+significa che il bot Discord è online, ma Google Gemini non sta accettando la richiesta in quel momento. Jarvis fa un breve retry automatico in caso di sovraccarico e, se Gemini continua a non rispondere, usa risposte locali per messaggi semplici o consiglia `Jarvis archivio <testo>` per interrogare direttamente Supabase.
 
 Per risolvere controlla su Render e Google AI:
 
