@@ -396,12 +396,40 @@ async function handleArchiveCommand(message) {
   }
 }
 
-function shouldReply(message) {
-  const content = message.content ?? '';
-  const mentionsBot = client.user ? message.mentions.has(client.user.id) : false;
-  const containsJarvis = /\bjarvis\b/i.test(content);
+function isDirectBotMention(message) {
+  return Boolean(client.user && message.mentions.users.has(client.user.id));
+}
 
-  return mentionsBot || containsJarvis;
+function startsWithJarvis(message) {
+  return /^jarvis(?:\b|[\s:,.!?])/i.test((message.content ?? '').trim());
+}
+
+function isAddressedToJarvis(message) {
+  return isDirectBotMention(message) || startsWithJarvis(message);
+}
+
+function hasGenericMention(message) {
+  return message.mentions.roles.size > 0 || message.mentions.channels.size > 0;
+}
+
+function shouldSkipBeforeHandling(message) {
+  if (message.mentions.everyone || /(^|\s)@(everyone|here)\b/i.test(message.content ?? '')) {
+    logInfo('skip', 'everyone/here mention ignored');
+    return true;
+  }
+
+  if (!isAddressedToJarvis(message)) {
+    if (hasGenericMention(message) || /\bjarvis\b/i.test(message.content ?? '')) {
+      logInfo('skip', 'not addressed to Jarvis');
+    }
+    return true;
+  }
+
+  return false;
+}
+
+function shouldReply(message) {
+  return isAddressedToJarvis(message);
 }
 
 function cleanUserPrompt(message) {
@@ -1086,6 +1114,10 @@ client.on(Events.ShardError, (error, shardId) => {
 client.on(Events.MessageCreate, async (message) => {
   // Ignora messaggi di altri bot per evitare loop o risposte indesiderate.
   if (message.author.bot) return;
+
+  // Prima di qualsiasi chiamata a Supabase, Gemini o Tavily, rispondi solo se
+  // Jarvis è stato chiamato direttamente o il messaggio inizia con "Jarvis".
+  if (shouldSkipBeforeHandling(message)) return;
 
   if (isArchiveCommand(message)) {
     await handleArchiveCommand(message);
