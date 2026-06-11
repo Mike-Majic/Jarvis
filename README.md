@@ -337,9 +337,19 @@ oppure:
 Jarvis verifica archivio viola
 ```
 
-Questo comando restituisce risultati grezzi trovati su Supabase, includendo server, canale, data, contenuto del messaggio e metadati degli allegati se presenti.
+Questo comando restituisce i risultati trovati su Supabase, includendo server, canale, data, contenuto utile del messaggio e metadati degli allegati se presenti. Se il messaggio archiviato contiene più procedure nello stesso blocco, Jarvis prova a mostrare solo la sezione più collegata alla domanda.
 
-La ricerca è keyword based, case-insensitive e supporta anche codici brevi o alfanumerici come `A24`, `A14`, `DR` e `KO`. Usa anche una mappa di sinonimi tecnici: ad esempio `tubazione ostruita` prova anche `tubazione`, `ostruita`, `chiusura tubazione`, `A24` e `A14`; `fibra` espande verso colori, numerazione, splitter e cavo; `causale` espande verso chiusura, `A24`, `A14`, `DR` e `KO`. La stessa logica multi-query viene usata sia dalle domande automatiche sia da `Jarvis cerca archivio <testo>`. Per le liste numerate multilinea o blocchi molto pertinenti include tutto il contenuto del messaggio indicizzato nel contesto.
+La ricerca è keyword based, case-insensitive e supporta anche codici brevi o alfanumerici come `A24`, `A14`, `DR` e `KO`. Usa anche una mappa di sinonimi tecnici: ad esempio `tubazione ostruita` prova anche `tubazione`, `ostruita`, `chiusura tubazione`, `A24` e `A14`; `fibra` espande verso colori, numerazione, splitter e cavo; `causale` espande verso chiusura, `A24`, `A14`, `DR` e `KO`; `riparato in RL` espande verso `COD R`, `RISCONTRATO PROVATO CLT SI`, riparazione in armadio e permuta. La stessa logica multi-query viene usata sia dalle domande automatiche sia da `Jarvis cerca archivio <testo>`. Dopo la ricerca, Jarvis estrae la sezione più rilevante del messaggio archiviato: per esempio, se un blocco contiene più procedure `COD`, una domanda su `chiusura riparato in RL` deve preferire `COD: R` e la sottosezione `IN ARMADIO`, senza riportare gli altri codici.
+
+
+Per chiedere esplicitamente il testo completo di un blocco archiviato puoi aggiungere frasi come:
+
+```text
+Jarvis cerca archivio riparato in RL mandami tutto
+Jarvis cerca archivio COD R fammi vedere tutta la procedura
+```
+
+Senza queste frasi Jarvis evita di incollare tutto il blocco grezzo e mantiene la risposta più breve e pronta da usare.
 
 Se Supabase non contiene ancora righe indicizzate, Jarvis risponde:
 

@@ -81,7 +81,13 @@ const TECHNICAL_SYNONYMS = {
   a24: ['a24', 'tubazione', 'ostruita', 'chiusura'],
   a14: ['a14', 'tubazione', 'ostruita', 'chiusura'],
   dr: ['dr', 'causale', 'chiusura'],
-  ko: ['ko', 'causale', 'chiusura']
+  ko: ['ko', 'causale', 'chiusura'],
+  riparato: ['riparato', 'riparazione', 'risolto', 'ripristinato', 'armadio', 'rl', 'permuta', 'cod r'],
+  riparazione: ['riparazione', 'riparato', 'risolto', 'ripristinato', 'armadio', 'rl', 'permuta', 'cod r'],
+  risolto: ['risolto', 'riparato', 'ripristinato', 'cod r', 'armadio', 'rl'],
+  ripristinato: ['ripristinato', 'riparato', 'risolto', 'cod r', 'armadio', 'rl'],
+  rl: ['rl', 'armadio', 'permuta', 'riparato', 'riparazione', 'cod r'],
+  box: ['box', 'riparato', 'riparazione', 'cod r']
 };
 
 const COLOR_WORDS = [
@@ -180,7 +186,16 @@ export function buildArchiveSearchQueries(prompt) {
     pushUnique(queries, 'ko');
   }
 
-  return queries.slice(0, 30);
+  if (words.some((word) => ['riparato', 'riparazione', 'risolto', 'ripristinato', 'rl', 'armadio', 'permuta', 'naviga'].includes(word))) {
+    pushUnique(queries, 'cod r');
+    pushUnique(queries, 'riscontrato provato clt si');
+    pushUnique(queries, 'riparazione in armadio');
+    pushUnique(queries, 'rifatta permuta in armadio');
+    pushUnique(queries, 'cliente naviga');
+    pushUnique(queries, 'rl box valori isolamento collaudo');
+  }
+
+  return queries.slice(0, 40);
 }
 
 function containsNumberedMultilineList(content) {
@@ -229,6 +244,11 @@ function getMessageScore(message, usefulWords, originalWords, searchQueries = []
     score += 12;
   }
 
+  if (originalWords.some((word) => ['riparato', 'riparazione', 'risolto', 'ripristinato', 'rl', 'armadio', 'permuta', 'naviga'].includes(word))
+    && (/\bcod\s*[:.]?\s*r\b/i.test(content) || content.includes('riscontrato provato clt si'))) {
+    score += 18;
+  }
+
   for (const code of ['a24', 'a14', 'dr', 'ko']) {
     if (originalWords.includes(code) && new RegExp(`(^|[^a-z0-9])${code}([^a-z0-9]|$)`, 'i').test(content)) {
       score += 10;
@@ -236,6 +256,175 @@ function getMessageScore(message, usefulWords, originalWords, searchQueries = []
   }
 
   return score;
+}
+
+
+function wantsFullArchiveText(question) {
+  const normalized = normalizeText(question);
+  return [
+    'mandami tutto',
+    'fammi vedere tutta la procedura',
+    'riporta tutto il testo',
+    'mostrami tutto il testo',
+    'tutto il blocco',
+    'testo completo'
+  ].some((phrase) => normalized.includes(phrase));
+}
+
+function isUppercaseTitle(line) {
+  const cleaned = line.trim();
+  if (cleaned.length < 4) return false;
+  const letters = cleaned.replace(/[^a-zA-ZÀ-ÿ]/g, '');
+  if (letters.length < 3) return false;
+  return cleaned === cleaned.toUpperCase() && /[A-ZÀ-Ý]/.test(cleaned);
+}
+
+function isSectionMarker(line) {
+  const trimmed = line.trim();
+  return /^cod\s*[:.]?\s*[a-z0-9]+\b/i.test(trimmed)
+    || /^\[?\d{1,2}:\d{2}(?::\d{2})?\]?/.test(trimmed)
+    || /^(in armadio|al box)\b/i.test(trimmed)
+    || isUppercaseTitle(trimmed);
+}
+
+function splitArchiveTextIntoSections(text) {
+  const lines = String(text ?? '').split(/\r?\n/);
+  const hasCodSections = lines.some((line) => /^\s*cod\s*[:.]?\s*[a-z0-9]+\b/i.test(line));
+  const sections = [];
+  let current = [];
+
+  for (const line of lines) {
+    const startsNewSection = hasCodSections
+      ? /^\s*cod\s*[:.]?\s*[a-z0-9]+\b/i.test(line) && current.some((currentLine) => currentLine.trim())
+      : isSectionMarker(line) && current.some((currentLine) => currentLine.trim());
+
+    if (startsNewSection) {
+      sections.push(current.join('\n').trim());
+      current = [line];
+    } else {
+      current.push(line);
+    }
+  }
+
+  if (current.some((line) => line.trim())) {
+    sections.push(current.join('\n').trim());
+  }
+
+  return sections.filter(Boolean);
+}
+
+function isRepairQuestion(question) {
+  const normalized = normalizeText(question);
+  return /(riparat|riparazion|guasto risolto|linea sistemata|cliente naviga|ripristinat|rifatta permuta|ricollegata permuta|chiudere riparato|chiusura riparato|\brl\b|armadio|permuta)/i.test(normalized);
+}
+
+function isBoxRepairQuestion(question) {
+  return /\bbox\b/i.test(normalizeText(question));
+}
+
+function isArmadioRepairQuestion(question) {
+  return /(armadio|\brl\b|permuta)/i.test(normalizeText(question));
+}
+
+function scoreSectionForQuestion(question, section) {
+  const questionWords = extractUsefulWords(question);
+  const normalizedQuestion = normalizeText(question);
+  const normalizedSection = normalizeText(section);
+  let score = 0;
+
+  for (const word of questionWords) {
+    if (normalizedSection.includes(word)) score += word.length <= 2 ? 1 : 2;
+  }
+
+  if (/\bcod(?:ice)?\s*r\b/i.test(normalizedQuestion) && /\bcod\s*[:.]?\s*r\b/i.test(normalizedSection)) score += 90;
+
+  if (isRepairQuestion(question)) {
+    if (/\bcod\s*[:.]?\s*r\b/i.test(normalizedSection)) score += 80;
+    if (normalizedSection.includes('riscontrato provato clt si')) score += 35;
+    if (normalizedSection.includes('riparazione') || normalizedSection.includes('riparato')) score += 20;
+    if (normalizedSection.includes('permuta')) score += 18;
+    if (normalizedSection.includes('armadio') || /\brl\b/i.test(normalizedSection)) score += 18;
+    if (/\bcod\s*[:.]?\s*[xmspg7]\b/i.test(normalizedSection)) score -= 35;
+  }
+
+  if (isArmadioRepairQuestion(question) && /\bin armadio\b/i.test(normalizedSection)) score += 35;
+  if (isBoxRepairQuestion(question) && /\bal box\b/i.test(normalizedSection)) score += 35;
+
+  if (normalizedQuestion.includes('codice') && /^\s*cod\s*[:.]?/i.test(section)) score += 10;
+
+  return score;
+}
+
+function extractSubsectionsForQuestion(question, section) {
+  if (!isRepairQuestion(question)) return section;
+
+  const lines = section.split(/\r?\n/);
+  const subsectionIndexes = lines
+    .map((line, index) => (/^\s*(in armadio|al box)\b/i.test(line) ? index : -1))
+    .filter((index) => index >= 0);
+
+  if (subsectionIndexes.length === 0) return section;
+
+  const wantsArmadio = isArmadioRepairQuestion(question);
+  const wantsBox = isBoxRepairQuestion(question);
+  const keepIndexes = subsectionIndexes.filter((index) => {
+    const marker = normalizeText(lines[index]);
+    return (wantsArmadio && marker.includes('in armadio')) || (wantsBox && marker.includes('al box'));
+  });
+
+  if (keepIndexes.length === 0) return section;
+
+  const firstSubsection = subsectionIndexes[0];
+  const keptLines = lines.slice(0, firstSubsection);
+
+  for (const start of keepIndexes) {
+    const next = subsectionIndexes.find((index) => index > start) ?? lines.length;
+    keptLines.push(...lines.slice(start, next));
+  }
+
+  return keptLines.join('\n').trim();
+}
+
+function compactLongSection(question, section) {
+  const trimmed = String(section ?? '').trim();
+  if (trimmed.length <= 1200 || wantsFullArchiveText(question)) return trimmed;
+
+  const importantLinePattern = /cod\s*[:.]?|riscontrato|in armadio|al box|rifatta|ricollegata|\brl\b|\bbox\b|valori|isolamento|collaudo|pin|parlato|supporto|chiusura|riparazion|permuta/i;
+  const lines = trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const importantLines = lines.filter((line, index) => index < 3 || importantLinePattern.test(line));
+  let compacted = importantLines.join('\n').trim();
+
+  if (!compacted) compacted = trimmed.slice(0, 1200).trim();
+  if (compacted.length > 1200) compacted = compacted.slice(0, 1190).trimEnd() + '\n...';
+
+  return compacted;
+}
+
+export function extractRelevantSection(question, archiveText) {
+  const text = String(archiveText ?? '').trim();
+  if (!text || wantsFullArchiveText(question)) return text;
+
+  const sections = splitArchiveTextIntoSections(text);
+  if (sections.length === 0) return compactLongSection(question, text);
+
+  const bestSection = sections
+    .map((section) => ({ section, score: scoreSectionForQuestion(question, section) }))
+    .sort((a, b) => b.score - a.score)[0];
+
+  const selected = bestSection && bestSection.score > 0 ? bestSection.section : text;
+  const withRelevantSubsections = extractSubsectionsForQuestion(question, selected);
+
+  return compactLongSection(question, withRelevantSubsections);
+}
+
+export function prepareArchiveResultsForQuestion(question, results) {
+  if (wantsFullArchiveText(question)) return results;
+
+  return results.map((result) => ({
+    ...result,
+    originalContentLength: String(result.content ?? '').length,
+    content: extractRelevantSection(question, result.content)
+  })).filter((result) => String(result.content ?? '').trim().length > 0);
 }
 
 function escapePostgrestLikeValue(value) {

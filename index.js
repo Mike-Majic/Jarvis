@@ -13,6 +13,7 @@ import {
 import {
   formatArchiveResultsForDiscord,
   formatArchiveResultsForGemini,
+  prepareArchiveResultsForQuestion,
   searchArchive
 } from './src/archiveSearch.js';
 import {
@@ -363,7 +364,8 @@ async function handleArchiveSearchCommand(message) {
       return;
     }
 
-    await replyWithChunks(message, formatArchiveResultsForDiscord(search.results));
+    const focusedResults = prepareArchiveResultsForQuestion(query, search.results);
+    await replyWithChunks(message, formatArchiveResultsForDiscord(focusedResults));
   } catch (error) {
     logErrorWithStack('archiveSearch:error', "Errore durante la ricerca nell'archivio:", error);
     await message.reply({
@@ -491,6 +493,12 @@ function shouldUseArchive(prompt) {
     'numero',
     'telefono',
     'guasto',
+    'riparato',
+    'riparazione',
+    'risolto',
+    'ripristinato',
+    'naviga',
+    'rl',
     'modem',
     'seriale',
     'fibra',
@@ -548,6 +556,12 @@ function isClearlyTechnicalArchiveQuestion(prompt) {
     'ostruito',
     'chiusura',
     'guasto',
+    'riparato',
+    'riparazione',
+    'risolto',
+    'ripristinato',
+    'naviga',
+    'rl',
     'modem',
     'seriale',
     'fibra',
@@ -736,13 +750,14 @@ async function buildPromptWithArchiveContext(prompt) {
       };
     }
 
-    const context = formatArchiveResultsForGemini(search.results);
+    const focusedResults = prepareArchiveResultsForQuestion(prompt, search.results);
+    const context = formatArchiveResultsForGemini(focusedResults);
     return {
       usedArchive: true,
       archiveHadResults: true,
       shouldReportMissingArchiveAnswer: false,
       archiveSearchAttempted: true,
-      archiveFallbackReply: formatArchiveResultsForDiscord(search.results),
+      archiveFallbackReply: formatArchiveResultsForDiscord(focusedResults),
       prompt: `DOMANDA UTENTE:
 ${prompt}
 
@@ -751,7 +766,8 @@ ${context}
 
 ISTRUZIONI:
 - Usa SOLO il CONTENUTO ARCHIVIO DISCORD per rispondere se è pertinente alla domanda.
-- Se il contenuto archivio contiene la risposta, rispondi in modo diretto usando quei dati.
+- Il contenuto archivio è già stato tagliato sulla sezione più rilevante: non aggiungere procedure, COD o parti non presenti nel blocco.
+- Se trovi COD, causale o procedura, rispondi breve e pratico con solo codice, descrizione, note operative ed eventuale esempio di chiusura.
 - Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e il contenuto archivio non contiene la risposta, di' che non trovi la risposta nell'archivio.
 - Non usare conoscenza generale se contraddice o sostituisce l'archivio.`
     };
