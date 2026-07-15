@@ -39,19 +39,37 @@ function logError(scope, message, ...details) {
   console.error(`${formatLogPrefix(scope)} ${message}`, ...details);
 }
 
-const { DISCORD_TOKEN, GEMINI_API_KEY, GEMINI_MODEL = 'gemini-2.5-flash' } = process.env;
+const {
+  DISCORD_TOKEN,
+  AI_PROVIDER = 'gemini',
+  GEMINI_API_KEY,
+  GEMINI_MODEL = 'gemini-2.5-flash',
+  OPENAI_API_KEY,
+  OPENAI_MODEL = 'gpt-4.1-mini'
+} = process.env;
+const ACTIVE_AI_PROVIDER = AI_PROVIDER.trim().toLowerCase();
 
 if (!DISCORD_TOKEN) {
   logError('config', 'Errore: DISCORD_TOKEN non è configurato nel file .env');
   process.exit(1);
 }
 
-if (!GEMINI_API_KEY) {
+if (!['gemini', 'openai'].includes(ACTIVE_AI_PROVIDER)) {
+  logError('config', "Errore: AI_PROVIDER deve essere 'gemini' oppure 'openai' nel file .env");
+  process.exit(1);
+}
+
+if (ACTIVE_AI_PROVIDER === 'gemini' && !GEMINI_API_KEY) {
   logError('config', 'Errore: GEMINI_API_KEY non è configurato nel file .env');
   process.exit(1);
 }
 
-const gemini = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+if (ACTIVE_AI_PROVIDER === 'openai' && !OPENAI_API_KEY) {
+  logError('config', 'Errore: OPENAI_API_KEY non è configurato nel file .env');
+  process.exit(1);
+}
+
+const gemini = ACTIVE_AI_PROVIDER === 'gemini' ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 const client = new Client({
   intents: [
@@ -703,6 +721,84 @@ function convertHistoryToGeminiContents(history, prompt) {
   ];
 }
 
+function convertHistoryToOpenAiInput(history, prompt) {
+  return [
+    ...history.map((message) => ({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: message.content
+    })),
+    {
+      role: 'user',
+      content: prompt
+    }
+  ];
+}
+
+function isOpenAiRetryableError(error) {
+  return error?.status === 429 || error?.status >= 500;
+}
+
+function isOpenAiConfigOrQuotaError(error) {
+  return [401, 403, 429].includes(error?.status)
+    || `${error?.message ?? ''}`.toLowerCase().includes('quota')
+    || `${error?.message ?? ''}`.toLowerCase().includes('rate limit');
+}
+
+function extractOpenAiText(data) {
+  if (typeof data?.output_text === 'string' && data.output_text.trim()) {
+    return data.output_text.trim();
+  }
+
+  const textParts = data?.output
+    ?.flatMap((item) => item?.content ?? [])
+    ?.filter((content) => content?.type === 'output_text' && typeof content.text === 'string')
+    ?.map((content) => content.text.trim())
+    ?.filter(Boolean) ?? [];
+
+  return textParts.join('\n').trim();
+}
+
+async function generateOpenAiResponseWithRetry(request) {
+  const maxAttempts = 2;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(request)
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const error = new Error(data?.error?.message ?? `OpenAI API error ${response.status}`);
+        error.status = response.status;
+        error.code = data?.error?.code;
+        throw error;
+      }
+
+      return data;
+    } catch (error) {
+      lastError = error;
+
+      if (!isOpenAiRetryableError(error) || attempt === maxAttempts) {
+        throw error;
+      }
+
+      const delayMs = 1500 * attempt;
+      logWarn('ai:retry', `OpenAI temporaneamente non disponibile, ritento tra ${delayMs} ms (tentativo ${attempt + 1}/${maxAttempts})...`);
+      await wait(delayMs);
+    }
+  }
+
+  throw lastError;
+}
+
 function isGeminiQuotaOrApiKeyError(error) {
   const message = `${error?.message ?? ''} ${error?.status ?? ''} ${error?.code ?? ''}`.toLowerCase();
   return message.includes('quota')
@@ -937,7 +1033,7 @@ async function generateGeminiContentWithRetry(request) {
   throw lastError;
 }
 
-async function askGemini(channelId, prompt) {
+async function askAi(channelId, prompt) {
   const history = getChannelHistory(channelId);
   const archivePrompt = await buildPromptWithArchiveContext(prompt);
   const needsWebSearch = shouldUseWebSearch(prompt);
@@ -961,6 +1057,18 @@ async function askGemini(channelId, prompt) {
   }
 
   try {
+    if (ACTIVE_AI_PROVIDER === 'openai') {
+      const response = await generateOpenAiResponseWithRetry({
+        model: OPENAI_MODEL,
+        instructions: CHATGPT_LIKE_SYSTEM_INSTRUCTION,
+        input: convertHistoryToOpenAiInput(history, webPrompt.prompt),
+        temperature: 0.7,
+        top_p: 0.95
+      });
+
+      return extractOpenAiText(response) || 'Mi dispiace, non sono riuscito a generare una risposta.';
+    }
+
     const response = await generateGeminiContentWithRetry({
       model: GEMINI_MODEL,
       contents: convertHistoryToGeminiContents(history, webPrompt.prompt),
@@ -973,14 +1081,16 @@ async function askGemini(channelId, prompt) {
 
     return response.text?.trim() || 'Mi dispiace, non sono riuscito a generare una risposta.';
   } catch (error) {
-    if (isGeminiQuotaOrApiKeyError(error)) {
+    if (ACTIVE_AI_PROVIDER === 'openai') {
+      logErrorWithStack('ai:error', 'Errore durante la chiamata a OpenAI:', error);
+    } else if (isGeminiQuotaOrApiKeyError(error)) {
       logErrorWithStack('ai:error', 'Errore Gemini API key/quota:', error);
     } else {
       logErrorWithStack('ai:error', 'Errore durante la chiamata a Gemini:', error);
     }
 
     if (archivePrompt.archiveHadResults && archivePrompt.archiveFallbackReply) {
-      return `Ho trovato queste informazioni nell'archivio indicizzato, ma Gemini non ha risposto. Ti riporto i risultati grezzi:
+      return `Ho trovato queste informazioni nell'archivio indicizzato, ma il provider AI non ha risposto. Ti riporto i risultati grezzi:
 
 ${archivePrompt.archiveFallbackReply}`;
     }
@@ -989,6 +1099,10 @@ ${archivePrompt.archiveFallbackReply}`;
       return `${webPrompt.webFallbackReply}
 
 Fonte: risultati Tavily disponibili nei log/contesto.`;
+    }
+
+    if (ACTIVE_AI_PROVIDER === 'openai' && isOpenAiConfigOrQuotaError(error)) {
+      return 'OpenAI non sta accettando la richiesta: controlla OPENAI_API_KEY, modello, credito/quota e permessi. Il bot Discord è online.';
     }
 
     const localFallbackReply = getLocalFallbackReply(prompt, error);
@@ -1136,7 +1250,7 @@ client.on(Events.MessageCreate, async (message) => {
   // Ignora messaggi di altri bot per evitare loop o risposte indesiderate.
   if (message.author.bot) return;
 
-  // Prima di qualsiasi chiamata a Supabase, Gemini o Tavily, rispondi solo se
+  // Prima di qualsiasi chiamata a Supabase, provider AI o Tavily, rispondi solo se
   // Jarvis è stato chiamato direttamente o il messaggio inizia con "Jarvis".
   if (shouldSkipBeforeHandling(message)) return;
 
@@ -1158,7 +1272,7 @@ client.on(Events.MessageCreate, async (message) => {
     await message.channel.sendTyping();
 
     const customReply = getCustomReply(prompt);
-    const reply = customReply ?? await askGemini(message.channel.id, prompt);
+    const reply = customReply ?? await askAi(message.channel.id, prompt);
 
     rememberMessage(message.channel.id, 'user', prompt);
     rememberMessage(message.channel.id, 'assistant', reply);
