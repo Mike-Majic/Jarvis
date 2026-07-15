@@ -14,7 +14,7 @@ Non usa comandi slash: gli utenti possono scrivere normalmente nel canale, ad es
 - Legge i messaggi normali nei canali Discord.
 - Risponde solo se viene menzionato oppure se il messaggio contiene la parola `Jarvis`.
 - Ignora i messaggi inviati da altri bot.
-- Usa Gemini API per generare risposte.
+- Usa Gemini API per generare risposte, oppure OpenAI se imposti `AI_PROVIDER=openai`.
 - Risponde sempre in italiano.
 - Mantiene una piccola memoria conversazionale per canale, salvata solo in RAM.
 - Indicizza messaggi e metadati degli allegati su Supabase nella tabella `discord_messages`.
@@ -32,11 +32,11 @@ Questa è una base funzionante. Per ora Jarvis **non**:
 
 ## Requisiti
 
-Jarvis usa il pacchetto ufficiale `@google/genai` per comunicare con Gemini API e `@supabase/supabase-js` per salvare/cercare lo storico Discord su Supabase.
+Jarvis usa il pacchetto ufficiale `@google/genai` per comunicare con Gemini API, può chiamare OpenAI tramite Responses API quando `AI_PROVIDER=openai`, e usa `@supabase/supabase-js` per salvare/cercare lo storico Discord su Supabase.
 
 - Node.js 18 o superiore.
 - Un bot Discord creato nel [Discord Developer Portal](https://discord.com/developers/applications).
-- Una chiave API Gemini.
+- Una chiave API Gemini oppure una chiave OpenAI se vuoi usare un modello OpenAI.
 - Una chiave Tavily API per la ricerca online aggiornata.
 - Un progetto Supabase con la tabella `discord_messages` già creata.
 
@@ -60,8 +60,11 @@ Poi apri `.env` e inserisci i valori reali:
 
 ```env
 DISCORD_TOKEN=il_token_del_tuo_bot_discord
+AI_PROVIDER=gemini
 GEMINI_API_KEY=la_tua_chiave_gemini
 GEMINI_MODEL=gemini-2.5-flash
+OPENAI_API_KEY=la_tua_chiave_openai_opzionale
+OPENAI_MODEL=gpt-4.1-mini
 SUPABASE_URL=https://il-tuo-progetto.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=la_tua_service_role_key
 TAVILY_API_KEY=la_tua_chiave_tavily
@@ -121,7 +124,7 @@ Oppure menziona il bot:
 @Jarvis cosa devo fare in caso di guasto FTTH?
 ```
 
-Jarvis risponderà nel canale usando Gemini API.
+Jarvis risponderà nel canale usando il provider configurato: Gemini di default, oppure OpenAI con `AI_PROVIDER=openai`.
 
 
 ## Ricerca online aggiornata
@@ -191,6 +194,26 @@ Vengono tracciati:
 - disconnessioni, riconnessioni, resume ed errori degli shard;
 - heartbeat ogni 60 secondi con `client.ws.status`, ping e user tag disponibile.
 
+
+## Provider AI: Gemini o OpenAI
+
+Di default Jarvis continua a usare Gemini:
+
+```env
+AI_PROVIDER=gemini
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+Se vuoi avvicinarlo ancora di più all'esperienza ChatGPT, puoi usare OpenAI come provider principale senza cambiare il resto del bot:
+
+```env
+AI_PROVIDER=openai
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-4.1-mini
+```
+
+Archivio Supabase, ricerca web Tavily, memoria di canale e regole di sicurezza restano invariati: cambia solo il modello che genera la risposta finale.
 
 ## Errori Gemini e quota
 
@@ -307,11 +330,11 @@ Esempio:
 Jarvis il colore viola della fibra, che numero è?
 ```
 
-Per le domande tecniche o operative Jarvis analizza la frase, genera più query di ricerca e cerca sempre prima su Supabase nella colonna `content` prima di chiamare Gemini o la ricerca online. Questo vale per procedure, guasti, lavorazioni, causali, chiusura ticket e attività tecniche come `tubazione ostruita`, `come lo chiudo`, `delivery`, `assurance`, `permuta`, `KO`, `Remedy` o `Flower`. Se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata a Gemini e non usa Tavily per sostituire quei dati. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; solo se l'archivio non trova risultati può passare alla ricerca online.
+Per le domande tecniche o operative Jarvis analizza la frase, genera più query di ricerca e cerca sempre prima su Supabase nella colonna `content` prima di chiamare il provider AI o la ricerca online. Questo vale per procedure, guasti, lavorazioni, causali, chiusura ticket e attività tecniche come `tubazione ostruita`, `come lo chiudo`, `delivery`, `assurance`, `permuta`, `KO`, `Remedy` o `Flower`. Se trova messaggi pertinenti, aggiunge un blocco `CONTENUTO ARCHIVIO DISCORD` alla richiesta inviata al provider AI e non usa Tavily per sostituire quei dati. Quando questo blocco è presente, Jarvis deve dare priorità assoluta ai dati dell'archivio: se il contesto contiene la risposta, risponde usando quei dati; solo se l'archivio non trova risultati può passare alla ricerca online.
 
-Per i messaggi normali, ad esempio `Jarvis fa caldo`, `Jarvis come stai`, `Jarvis annamo bene` o battute/sfottò, Jarvis non cerca nell'archivio e risponde in modo naturale con Gemini o con risposte personalizzate.
+Per i messaggi normali, ad esempio `Jarvis fa caldo`, `Jarvis come stai`, `Jarvis annamo bene` o battute/sfottò, Jarvis non cerca nell'archivio e risponde in modo naturale con il provider AI configurato o con risposte personalizzate.
 
-Puoi anche interrogare direttamente l'archivio senza usare Gemini:
+Puoi anche interrogare direttamente l'archivio senza usare il provider AI:
 
 ```text
 Jarvis cerca archivio viola
