@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { GoogleGenAI } from '@google/genai';
 import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits, Status } from 'discord.js';
 import {
@@ -22,6 +23,7 @@ import {
   searchWeb,
   shouldUseWebSearch
 } from './src/tools/webSearch.js';
+import { formatRoutePlanForDiscord, planFreeOptimizedRoute } from './src/tools/freeRoutePlanner.js';
 
 function formatLogPrefix(scope) {
   return `[${new Date().toISOString()}] [${scope}]`;
@@ -39,19 +41,37 @@ function logError(scope, message, ...details) {
   console.error(`${formatLogPrefix(scope)} ${message}`, ...details);
 }
 
-const { DISCORD_TOKEN, GEMINI_API_KEY, GEMINI_MODEL = 'gemini-2.5-flash' } = process.env;
+const {
+  DISCORD_TOKEN,
+  AI_PROVIDER = 'gemini',
+  GEMINI_API_KEY,
+  GEMINI_MODEL = 'gemini-2.5-flash',
+  OPENAI_API_KEY,
+  OPENAI_MODEL = 'gpt-4.1-mini'
+} = process.env;
+const ACTIVE_AI_PROVIDER = AI_PROVIDER.trim().toLowerCase();
 
 if (!DISCORD_TOKEN) {
   logError('config', 'Errore: DISCORD_TOKEN non è configurato nel file .env');
   process.exit(1);
 }
 
-if (!GEMINI_API_KEY) {
+if (!['gemini', 'openai'].includes(ACTIVE_AI_PROVIDER)) {
+  logError('config', "Errore: AI_PROVIDER deve essere 'gemini' oppure 'openai' nel file .env");
+  process.exit(1);
+}
+
+if (ACTIVE_AI_PROVIDER === 'gemini' && !GEMINI_API_KEY) {
   logError('config', 'Errore: GEMINI_API_KEY non è configurato nel file .env');
   process.exit(1);
 }
 
-const gemini = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+if (ACTIVE_AI_PROVIDER === 'openai' && !OPENAI_API_KEY) {
+  logError('config', 'Errore: OPENAI_API_KEY non è configurato nel file .env');
+  process.exit(1);
+}
+
+const gemini = ACTIVE_AI_PROVIDER === 'gemini' ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
 
 const client = new Client({
   intents: [
@@ -65,8 +85,9 @@ const client = new Client({
 // Memoria conversazionale semplice in RAM, separata per canale.
 // Nota: viene azzerata a ogni riavvio del bot.
 const channelMemory = new Map();
-const MAX_MEMORY_MESSAGES = 10;
+const MAX_MEMORY_MESSAGES = 20;
 const DISCORD_MESSAGE_LIMIT = 2000;
+const MAX_IMAGE_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 const SAFE_MESSAGE_LIMIT = 1900;
 const INDEX_CHANNEL_COMMAND = 'jarvis indicizza questo canale';
 const ARCHIVE_STATUS_COMMAND = 'jarvis stato archivio';
@@ -80,12 +101,130 @@ const INDEX_MAX_MESSAGES = Number.parseInt(process.env.INDEX_MAX_MESSAGES ?? `${
 const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX_MESSAGES > 0
   ? INDEX_MAX_MESSAGES
   : DEFAULT_INDEX_MAX_MESSAGES;
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL?.replace(/\/$/, '') ?? '';
 const RAW_PORT = Number.parseInt(process.env.PORT ?? '3000', 10);
 const PORT = Number.isFinite(RAW_PORT) && RAW_PORT > 0 ? RAW_PORT : 3000;
 const DISCORD_DIAGNOSTICS_INTERVAL_MS = 60_000;
 const DISCORD_RELOGIN_DELAY_MS = 5_000;
 let diagnosticsStarted = false;
 let reloginInProgress = false;
+const routeMapPages = new Map();
+const ROUTE_MAP_PAGE_TTL_MS = 60 * 60 * 1000;
+
+const CHATGPT_LIKE_SYSTEM_INSTRUCTION = `Sei Jarvis, un assistente AI dentro Discord con uno stile conversazionale simile a ChatGPT.
+Obiettivo principale: essere utile, accurato, naturale e collaborativo.
+Linee guida generali:
+- Rispondi sempre in italiano, salvo richiesta esplicita di un'altra lingua.
+- Adatta tono, lunghezza e livello tecnico alla domanda dell'utente.
+- Se la richiesta è semplice, rispondi direttamente; se è complessa, struttura la risposta con punti o passaggi chiari.
+- Se mancano informazioni importanti, fai una domanda di chiarimento breve oppure dichiara l'assunzione che stai facendo.
+- Non inventare dettagli: segnala incertezza, limiti o dati mancanti quando serve.
+- Per codice, procedure e troubleshooting, dai istruzioni pratiche, esempi e prossimi passi verificabili.
+- Mantieni un tono amichevole e naturale, senza essere invadente o eccessivamente scherzoso.
+- Non citare l'archivio o il web nei messaggi normali se non sono stati forniti blocchi di contesto.
+Regole sul contesto:
+- Se è presente un blocco CONTENUTO ARCHIVIO DISCORD, dagli priorità assoluta rispetto alla conoscenza generale.
+- Non usare conoscenza generale se contraddice l'archivio.
+- Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e l'archivio ha risultati, rispondi solo con i dati trovati.
+- Se il contesto archivio non contiene la risposta, di' chiaramente che non trovi la risposta nell'archivio.
+- Se è presente un blocco CONTENUTO WEB AGGIORNATO, usalo per dati recenti e includi una fonte/link principale quando disponibile.
+- Non inventare dati aggiornati senza fonti web.
+- Se i risultati web non sono sufficienti o sono ambigui, avvisa chiaramente.`;
+
+
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function buildPublicUrl(path) {
+  const baseUrl = PUBLIC_BASE_URL || `http://localhost:${PORT}`;
+  return `${baseUrl}${path}`;
+}
+
+function buildRouteMapHtml(plan) {
+  const stopsJson = JSON.stringify(plan.orderedStops.map((stop, index) => ({
+    number: index + 1,
+    address: `${stop.address}${stop.area ? `, ${stop.area}` : ''}`,
+    lat: stop.lat,
+    lon: stop.lon,
+    mapsUrl: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(stop.query)}`
+  })));
+
+  return `<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jarvis - percorso ottimizzato</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; }
+    header { padding: 14px 16px; border-bottom: 1px solid #e5e7eb; }
+    h1 { font-size: 18px; margin: 0 0 6px; }
+    p { margin: 0; }
+    #map { height: 72vh; min-height: 420px; }
+    .summary { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+    .pill { background: #eef2ff; border-radius: 999px; padding: 6px 10px; }
+    .marker-label { background: #2563eb; color: white; border-radius: 999px; width: 28px; height: 28px; display: grid; place-items: center; font-weight: 700; border: 2px solid white; box-shadow: 0 1px 4px #0006; }
+    ol { margin: 12px 16px 24px; padding-left: 24px; }
+    li { margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Percorso ottimizzato da Jarvis</h1>
+    <div class="summary">
+      <span class="pill">Distanza: ${escapeHtml(plan.distanceText)}</span>
+      <span class="pill">Tempo stimato: ${escapeHtml(plan.durationText)}</span>
+      <a class="pill" href="${escapeHtml(plan.googleMapsUrl)}" target="_blank" rel="noreferrer">Apri percorso in Google Maps</a>
+    </div>
+  </header>
+  <div id="map"></div>
+  <ol id="stops"></ol>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const stops = ${stopsJson};
+    const map = L.map('map');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+    const latLngs = stops.map((stop) => [stop.lat, stop.lon]);
+    stops.forEach((stop) => {
+      const icon = L.divIcon({ className: '', html: '<div class="marker-label">' + stop.number + '</div>', iconSize: [32, 32], iconAnchor: [16, 16] });
+      L.marker([stop.lat, stop.lon], { icon })
+        .addTo(map)
+        .bindPopup('<strong>' + stop.number + '. ' + stop.address + '</strong><br><a target="_blank" rel="noreferrer" href="' + stop.mapsUrl + '">Apri in Google Maps</a>');
+    });
+    L.polyline(latLngs, { color: '#2563eb', weight: 5, opacity: 0.8 }).addTo(map);
+    map.fitBounds(latLngs, { padding: [40, 40] });
+    document.getElementById('stops').innerHTML = stops.map((stop) => '<li><a target="_blank" rel="noreferrer" href="' + stop.mapsUrl + '">' + stop.address + '</a></li>').join('');
+  </script>
+</body>
+</html>`;
+}
+
+function createRouteMapPage(plan) {
+  const id = randomUUID();
+  routeMapPages.set(id, {
+    html: buildRouteMapHtml(plan),
+    expiresAt: Date.now() + ROUTE_MAP_PAGE_TTL_MS
+  });
+  return buildPublicUrl(`/maps/${id}`);
+}
+
+function cleanupExpiredRouteMapPages() {
+  const now = Date.now();
+  for (const [id, page] of routeMapPages.entries()) {
+    if (page.expiresAt <= now) routeMapPages.delete(id);
+  }
+}
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -98,6 +237,22 @@ function startHealthServer() {
     if (path === '/healthz') {
       response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
       response.end('ok');
+      return;
+    }
+
+    if (path.startsWith('/maps/')) {
+      cleanupExpiredRouteMapPages();
+      const id = path.slice('/maps/'.length);
+      const page = routeMapPages.get(id);
+
+      if (page) {
+        response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        response.end(page.html);
+        return;
+      }
+
+      response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      response.end('Map not found or expired');
       return;
     }
 
@@ -445,6 +600,145 @@ function cleanUserPrompt(message) {
   return prompt || 'Rispondi come assistente AI in italiano.';
 }
 
+
+function isRoutePlanningPrompt(prompt) {
+  const normalized = normalizeForRules(prompt);
+  return /(calcol|crea|fammi|genera|ottimizz|miglior).{0,40}(percorso|giro|tragitto|mappa|strada|itinerario)/i.test(normalized)
+    || /(percorso|giro|tragitto|mappa|strada|itinerario).{0,40}(miglior|ottim|veloce|breve)/i.test(normalized);
+}
+
+function getImageAttachment(message) {
+  return [...message.attachments.values()].find((attachment) => {
+    const contentType = attachment.contentType ?? '';
+    return contentType.startsWith('image/') && attachment.url && attachment.size <= MAX_IMAGE_ATTACHMENT_BYTES;
+  });
+}
+
+async function getRouteImageAttachment(message) {
+  const directAttachment = getImageAttachment(message);
+  if (directAttachment) return directAttachment;
+
+  if (!message.reference?.messageId || typeof message.fetchReference !== 'function') {
+    return null;
+  }
+
+  try {
+    const referencedMessage = await message.fetchReference();
+    return getImageAttachment(referencedMessage) ?? null;
+  } catch (error) {
+    logWarn('route:image', `Non riesco a leggere il messaggio citato ${message.reference.messageId}: ${error?.message ?? error}`);
+    return null;
+  }
+}
+
+async function downloadAttachmentAsBase64(attachment) {
+  const response = await fetch(attachment.url);
+  if (!response.ok) {
+    throw new Error(`Download allegato fallito: ${response.status}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer).toString('base64');
+}
+
+function stripJsonFence(text) {
+  return String(text ?? '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
+}
+
+function parseAddressExtractionJson(text) {
+  const parsed = JSON.parse(stripJsonFence(text));
+  const addresses = Array.isArray(parsed) ? parsed : parsed.addresses;
+
+  if (!Array.isArray(addresses)) return [];
+
+  return addresses
+    .map((item, index) => ({
+      label: String(item.label ?? index + 1),
+      area: String(item.area ?? item.zona ?? item.locality ?? '').trim(),
+      address: String(item.address ?? item.indirizzo ?? item.street ?? item.text ?? '').trim()
+    }))
+    .filter((item) => item.address);
+}
+
+function buildVisionAddressPrompt(userPrompt) {
+  return `Leggi lo screenshot allegato e trova solo indirizzi, vie, civici e località utili per creare un percorso in auto.
+Rispondi SOLO con JSON valido, senza markdown, nel formato:
+{"addresses":[{"label":"1","area":"Comune o zona","address":"Via e civico"}]}
+Se non trovi indirizzi, rispondi con {"addresses":[]}.
+Richiesta utente: ${userPrompt}`;
+}
+
+async function extractAddressesFromImageWithGemini(attachment, prompt) {
+  const base64Image = await downloadAttachmentAsBase64(attachment);
+  const response = await generateGeminiContentWithRetry({
+    model: GEMINI_MODEL,
+    contents: [{
+      role: 'user',
+      parts: [
+        { text: buildVisionAddressPrompt(prompt) },
+        { inlineData: { mimeType: attachment.contentType, data: base64Image } }
+      ]
+    }],
+    config: {
+      temperature: 0.1,
+      responseMimeType: 'application/json'
+    }
+  });
+
+  return parseAddressExtractionJson(response.text ?? '');
+}
+
+async function extractAddressesFromImageWithOpenAi(attachment, prompt) {
+  const base64Image = await downloadAttachmentAsBase64(attachment);
+  const response = await generateOpenAiResponseWithRetry({
+    model: OPENAI_MODEL,
+    instructions: 'Estrai indirizzi da screenshot e rispondi solo con JSON valido.',
+    input: [{
+      role: 'user',
+      content: [
+        { type: 'input_text', text: buildVisionAddressPrompt(prompt) },
+        { type: 'input_image', image_url: `data:${attachment.contentType};base64,${base64Image}` }
+      ]
+    }],
+    temperature: 0.1
+  });
+
+  return parseAddressExtractionJson(extractOpenAiText(response));
+}
+
+async function extractAddressesFromImage(attachment, prompt) {
+  if (ACTIVE_AI_PROVIDER === 'openai') {
+    return extractAddressesFromImageWithOpenAi(attachment, prompt);
+  }
+
+  return extractAddressesFromImageWithGemini(attachment, prompt);
+}
+
+async function maybeHandleRoutePlanningFromImage(message, prompt) {
+  if (!isRoutePlanningPrompt(prompt)) return null;
+
+  const imageAttachment = await getRouteImageAttachment(message);
+  if (!imageAttachment) return null;
+
+  try {
+    const addresses = await extractAddressesFromImage(imageAttachment, prompt);
+    if (addresses.length < 2) {
+      return 'Ho provato a leggere lo screenshot, ma non ho trovato almeno due indirizzi chiari. Rimandamelo più grande oppure scrivimi le vie in testo.';
+    }
+
+    const plan = await planFreeOptimizedRoute(addresses, { defaultArea: 'Lazio' });
+    const mapUrl = plan.ok ? createRouteMapPage(plan) : null;
+    return mapUrl ? `${formatRoutePlanForDiscord(plan)}\nMappa interattiva: ${mapUrl}` : formatRoutePlanForDiscord(plan);
+  } catch (error) {
+    logErrorWithStack('route:image', 'Errore durante calcolo percorso da screenshot:', error);
+    return 'Ho visto lo screenshot, ma non sono riuscito a leggere gli indirizzi o calcolare il percorso gratuito. Prova a rimandare l’immagine più nitida oppure scrivi le vie in testo.';
+  }
+}
+
 function normalizeForRules(value) {
   return String(value ?? '')
     .toLowerCase()
@@ -682,6 +976,84 @@ function convertHistoryToGeminiContents(history, prompt) {
   ];
 }
 
+function convertHistoryToOpenAiInput(history, prompt) {
+  return [
+    ...history.map((message) => ({
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      content: message.content
+    })),
+    {
+      role: 'user',
+      content: prompt
+    }
+  ];
+}
+
+function isOpenAiRetryableError(error) {
+  return error?.status === 429 || error?.status >= 500;
+}
+
+function isOpenAiConfigOrQuotaError(error) {
+  return [401, 403, 429].includes(error?.status)
+    || `${error?.message ?? ''}`.toLowerCase().includes('quota')
+    || `${error?.message ?? ''}`.toLowerCase().includes('rate limit');
+}
+
+function extractOpenAiText(data) {
+  if (typeof data?.output_text === 'string' && data.output_text.trim()) {
+    return data.output_text.trim();
+  }
+
+  const textParts = data?.output
+    ?.flatMap((item) => item?.content ?? [])
+    ?.filter((content) => content?.type === 'output_text' && typeof content.text === 'string')
+    ?.map((content) => content.text.trim())
+    ?.filter(Boolean) ?? [];
+
+  return textParts.join('\n').trim();
+}
+
+async function generateOpenAiResponseWithRetry(request) {
+  const maxAttempts = 2;
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(request)
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const error = new Error(data?.error?.message ?? `OpenAI API error ${response.status}`);
+        error.status = response.status;
+        error.code = data?.error?.code;
+        throw error;
+      }
+
+      return data;
+    } catch (error) {
+      lastError = error;
+
+      if (!isOpenAiRetryableError(error) || attempt === maxAttempts) {
+        throw error;
+      }
+
+      const delayMs = 1500 * attempt;
+      logWarn('ai:retry', `OpenAI temporaneamente non disponibile, ritento tra ${delayMs} ms (tentativo ${attempt + 1}/${maxAttempts})...`);
+      await wait(delayMs);
+    }
+  }
+
+  throw lastError;
+}
+
 function isGeminiQuotaOrApiKeyError(error) {
   const message = `${error?.message ?? ''} ${error?.status ?? ''} ${error?.code ?? ''}`.toLowerCase();
   return message.includes('quota')
@@ -916,7 +1288,7 @@ async function generateGeminiContentWithRetry(request) {
   throw lastError;
 }
 
-async function askGemini(channelId, prompt) {
+async function askAi(channelId, prompt) {
   const history = getChannelHistory(channelId);
   const archivePrompt = await buildPromptWithArchiveContext(prompt);
   const needsWebSearch = shouldUseWebSearch(prompt);
@@ -940,26 +1312,40 @@ async function askGemini(channelId, prompt) {
   }
 
   try {
+    if (ACTIVE_AI_PROVIDER === 'openai') {
+      const response = await generateOpenAiResponseWithRetry({
+        model: OPENAI_MODEL,
+        instructions: CHATGPT_LIKE_SYSTEM_INSTRUCTION,
+        input: convertHistoryToOpenAiInput(history, webPrompt.prompt),
+        temperature: 0.7,
+        top_p: 0.95
+      });
+
+      return extractOpenAiText(response) || 'Mi dispiace, non sono riuscito a generare una risposta.';
+    }
+
     const response = await generateGeminiContentWithRetry({
       model: GEMINI_MODEL,
       contents: convertHistoryToGeminiContents(history, webPrompt.prompt),
       config: {
-        systemInstruction:
-          `Sei Jarvis, un assistente AI dentro Discord. Rispondi sempre in italiano, in modo chiaro, pratico, naturale e simpatico. Per messaggi normali conversa liberamente senza citare l'archivio. Se è presente un blocco CONTENUTO ARCHIVIO DISCORD, devi dare priorità assoluta a quello. Non usare conoscenza generale se contraddice l'archivio. Se è presente un blocco CONTENUTO WEB AGGIORNATO, usalo per dati recenti e includi una fonte/link principale quando disponibile. Non inventare dati aggiornati senza fonti web. Se i risultati web non sono sufficienti, avvisa chiaramente. Se la domanda riguarda dati aziendali, procedure, numerazioni o storico e l'archivio ha risultati, rispondi solo con i dati trovati. Se il contesto non contiene la risposta, di' chiaramente che non trovi la risposta nell'archivio.`,
-        temperature: 0.4
+        systemInstruction: CHATGPT_LIKE_SYSTEM_INSTRUCTION,
+        temperature: 0.7,
+        topP: 0.95
       }
     });
 
     return response.text?.trim() || 'Mi dispiace, non sono riuscito a generare una risposta.';
   } catch (error) {
-    if (isGeminiQuotaOrApiKeyError(error)) {
+    if (ACTIVE_AI_PROVIDER === 'openai') {
+      logErrorWithStack('ai:error', 'Errore durante la chiamata a OpenAI:', error);
+    } else if (isGeminiQuotaOrApiKeyError(error)) {
       logErrorWithStack('ai:error', 'Errore Gemini API key/quota:', error);
     } else {
       logErrorWithStack('ai:error', 'Errore durante la chiamata a Gemini:', error);
     }
 
     if (archivePrompt.archiveHadResults && archivePrompt.archiveFallbackReply) {
-      return `Ho trovato queste informazioni nell'archivio indicizzato, ma Gemini non ha risposto. Ti riporto i risultati grezzi:
+      return `Ho trovato queste informazioni nell'archivio indicizzato, ma il provider AI non ha risposto. Ti riporto i risultati grezzi:
 
 ${archivePrompt.archiveFallbackReply}`;
     }
@@ -968,6 +1354,10 @@ ${archivePrompt.archiveFallbackReply}`;
       return `${webPrompt.webFallbackReply}
 
 Fonte: risultati Tavily disponibili nei log/contesto.`;
+    }
+
+    if (ACTIVE_AI_PROVIDER === 'openai' && isOpenAiConfigOrQuotaError(error)) {
+      return 'OpenAI non sta accettando la richiesta: controlla OPENAI_API_KEY, modello, credito/quota e permessi. Il bot Discord è online.';
     }
 
     const localFallbackReply = getLocalFallbackReply(prompt, error);
@@ -1115,7 +1505,7 @@ client.on(Events.MessageCreate, async (message) => {
   // Ignora messaggi di altri bot per evitare loop o risposte indesiderate.
   if (message.author.bot) return;
 
-  // Prima di qualsiasi chiamata a Supabase, Gemini o Tavily, rispondi solo se
+  // Prima di qualsiasi chiamata a Supabase, provider AI o Tavily, rispondi solo se
   // Jarvis è stato chiamato direttamente o il messaggio inizia con "Jarvis".
   if (shouldSkipBeforeHandling(message)) return;
 
@@ -1137,7 +1527,8 @@ client.on(Events.MessageCreate, async (message) => {
     await message.channel.sendTyping();
 
     const customReply = getCustomReply(prompt);
-    const reply = customReply ?? await askGemini(message.channel.id, prompt);
+    const routeReply = customReply ? null : await maybeHandleRoutePlanningFromImage(message, prompt);
+    const reply = customReply ?? routeReply ?? await askAi(message.channel.id, prompt);
 
     rememberMessage(message.channel.id, 'user', prompt);
     rememberMessage(message.channel.id, 'assistant', reply);
