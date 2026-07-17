@@ -225,6 +225,8 @@ function cleanupExpiredRouteMapPages() {
     if (page.expiresAt <= now) routeMapPages.delete(id);
   }
 }
+<<<<<<< codex/migliora-comportamento-per-eguagliare-chatgpt-tgao02
+=======
 
 const CHATGPT_LIKE_SYSTEM_INSTRUCTION = `Sei Jarvis, un assistente AI dentro Discord con uno stile conversazionale simile a ChatGPT.
 Obiettivo principale: essere utile, accurato, naturale e collaborativo.
@@ -246,6 +248,7 @@ Regole sul contesto:
 - Non inventare dati aggiornati senza fonti web.
 - Se i risultati web non sono sufficienti o sono ambigui, avvisa chiaramente.`;
 
+>>>>>>> main
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -635,6 +638,26 @@ function getImageAttachment(message) {
   });
 }
 
+<<<<<<< codex/migliora-comportamento-per-eguagliare-chatgpt-tgao02
+async function getRouteImageAttachment(message) {
+  const directAttachment = getImageAttachment(message);
+  if (directAttachment) return directAttachment;
+
+  if (!message.reference?.messageId || typeof message.fetchReference !== 'function') {
+    return null;
+  }
+
+  try {
+    const referencedMessage = await message.fetchReference();
+    return getImageAttachment(referencedMessage) ?? null;
+  } catch (error) {
+    logWarn('route:image', `Non riesco a leggere il messaggio citato ${message.reference.messageId}: ${error?.message ?? error}`);
+    return null;
+  }
+}
+
+=======
+>>>>>>> main
 async function downloadAttachmentAsBase64(attachment) {
   const response = await fetch(attachment.url);
   if (!response.ok) {
@@ -725,7 +748,11 @@ async function extractAddressesFromImage(attachment, prompt) {
 async function maybeHandleRoutePlanningFromImage(message, prompt) {
   if (!isRoutePlanningPrompt(prompt)) return null;
 
+<<<<<<< codex/migliora-comportamento-per-eguagliare-chatgpt-tgao02
+  const imageAttachment = await getRouteImageAttachment(message);
+=======
   const imageAttachment = getImageAttachment(message);
+>>>>>>> main
   if (!imageAttachment) return null;
 
   try {

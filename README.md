@@ -134,7 +134,7 @@ Jarvis risponderà nel canale usando il provider configurato: Gemini di default,
 
 ## Percorsi gratuiti da screenshot
 
-Se scrivi una richiesta come `Jarvis calcola il percorso migliore` allegando uno screenshot con indirizzi, Jarvis prova a:
+Se scrivi una richiesta come `Jarvis calcola il percorso migliore` allegando uno screenshot con indirizzi, oppure rispondendo a un messaggio che contiene lo screenshot, Jarvis prova a:
 
 1. leggere gli indirizzi dall'immagine con il provider vision configurato;
 2. geocodificarli con Nominatim/OpenStreetMap;
