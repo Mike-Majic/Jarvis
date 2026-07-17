@@ -31,7 +31,7 @@ Non usa comandi slash: gli utenti possono scrivere normalmente nel canale, ad es
 
 Questa è una base funzionante. Per ora Jarvis **non**:
 
-- scarica o legge allegati come PDF, Excel, Word o immagini;
+- legge PDF, Excel o Word; per ora usa immagini solo nella funzione percorso da screenshot;
 - usa comandi slash.
 
 ## Requisiti
@@ -130,6 +130,18 @@ Oppure menziona il bot:
 
 Jarvis risponderà nel canale usando il provider configurato: Gemini di default, oppure OpenAI con `AI_PROVIDER=openai`.
 
+
+
+## Percorsi gratuiti da screenshot
+
+Se scrivi una richiesta come `Jarvis calcola il percorso migliore` allegando uno screenshot con indirizzi, Jarvis prova a:
+
+1. leggere gli indirizzi dall'immagine con il provider vision configurato;
+2. geocodificarli con Nominatim/OpenStreetMap;
+3. ottimizzare l'ordine delle tappe con OSRM;
+4. rispondere con distanza, tempo stimato, link apribili in Google Maps/OpenStreetMap e una pagina mappa interattiva temporanea.
+
+Questa funzione usa servizi gratuiti e pubblici: può fallire se lo screenshot è poco leggibile, se gli indirizzi sono ambigui o se Nominatim/OSRM non sono raggiungibili. Per risultati migliori includi città/provincia nello screenshot o nel messaggio. Se il bot gira dietro Render o un dominio pubblico, imposta `PUBLIC_BASE_URL` per far puntare i link delle mappe interattive all’URL pubblico del servizio.
 
 ## Ricerca online aggiornata
 
