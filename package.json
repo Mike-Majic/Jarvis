@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "check": "node --check index.js && node --check src/supabaseClient.js && node --check src/discordIndexer.js && node --check src/archiveSearch.js && node --check src/tools/webSearch.js && node --check src/tools/weather.js"
+    "check": "node --check index.js && node --check src/supabaseClient.js && node --check src/discordIndexer.js && node --check src/archiveSearch.js && node --check src/tools/webSearch.js && node --check src/tools/weather.js && node --check src/tools/freeRoutePlanner.js"
   },
   "keywords": [
     "discord",
