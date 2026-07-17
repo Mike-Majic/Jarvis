@@ -23,6 +23,10 @@ Non usa comandi slash: gli utenti possono scrivere normalmente nel canale, ad es
 - Divide automaticamente le risposte troppo lunghe in più messaggi compatibili con Discord.
 - Gestisce gli errori senza far crashare il processo.
 
+## Documenti di progetto
+
+- [Piano gratuito per mappe da screenshot](docs/free-map-workflow.md)
+
 ## Cosa non fa ancora
 
 Questa è una base funzionante. Per ora Jarvis **non**:
