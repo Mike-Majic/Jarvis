@@ -443,3 +443,18 @@ Per ora Jarvis:
 - salva lo storico indicizzato su Supabase nella tabella `discord_messages`.
 
 La scansione usa pause tra i blocchi e tentativi automatici in caso di errori temporanei o rate limit.
+
+## Configurazione per-guild (`guild_settings`)
+
+Jarvis gira anche su server con vincoli diversi (es. un server di lavoro con dati sensibili e un server community pubblico). La tabella Supabase `guild_settings` permette di configurare due cose per ogni guild:
+
+- `restrict_role_id` (nullable): se valorizzato, solo i membri con quel ruolo (o il server owner) possono usare Jarvis su quella guild. Chi non ha il ruolo riceve un messaggio privato ("Non hai il permesso di usare Jarvis su questo server.") e la richiesta non viene elaborata oltre.
+- `enable_work_memory` (default `true`): se `false`, Jarvis non esegue mai la ricerca nell'archivio Supabase (`discord_messages`) per quella guild, quindi procedure, codici di chiusura e altri dati lavorativi non entrano mai nel contesto passato al modello, indipendentemente da chi scrive.
+
+Lo schema e la riga di esempio per "GTA VI Community Italia" sono in `supabase/guild_settings.sql`. Le impostazioni vengono lette da Supabase e tenute in cache in RAM per qualche minuto, così non serve interrogare il database a ogni messaggio.
+
+Una guild senza riga in `guild_settings` non ha restrizioni: nessun ruolo richiesto e memoria di lavoro attiva (comportamento invariato rispetto a prima).
+
+## Relay traduzioni Reddit (GTA VI Community Italia)
+
+Nel canale sorgente configurato (Reddit-Raw) Jarvis traduce in italiano, in modo letterale, i post che un altro bot (es. MonitoRSS) pubblica lì, e li ripubblica come embed nel canale di destinazione (Teorie-e-Leak). La traduzione non altera username Reddit, subreddit o link, e non aggiunge commenti. Se la chiamata al provider AI fallisce, l'errore viene loggato e non viene pubblicato nulla, per evitare post tradotti a metà.

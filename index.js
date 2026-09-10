@@ -2,7 +2,7 @@ import 'dotenv/config';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { GoogleGenAI } from '@google/genai';
-import { Client, Events, GatewayIntentBits, Partials, PermissionFlagsBits, Status } from 'discord.js';
+import { Client, EmbedBuilder, Events, GatewayIntentBits, Partials, PermissionFlagsBits, Status } from 'discord.js';
 import {
   ChannelNotFetchableError,
   deleteChannelArchive,
@@ -24,6 +24,7 @@ import {
   shouldUseWebSearch
 } from './src/tools/webSearch.js';
 import { formatRoutePlanForDiscord, planFreeOptimizedRoute } from './src/tools/freeRoutePlanner.js';
+import { getGuildSettings } from './src/guildSettings.js';
 
 function formatLogPrefix(scope) {
   return `[${new Date().toISOString()}] [${scope}]`;
@@ -96,6 +97,9 @@ const REINDEX_CHANNEL_COMMAND = 'jarvis reindicizza questo canale';
 const ARCHIVE_SEARCH_COMMAND_PREFIX = 'jarvis cerca archivio';
 const ARCHIVE_VERIFY_COMMAND_PREFIX = 'jarvis verifica archivio';
 const ARCHIVE_SHORT_COMMAND_PREFIX = 'jarvis archivio';
+const REDDIT_RELAY_GUILD_ID = '1544011913564786809';
+const REDDIT_RELAY_SOURCE_CHANNEL_ID = '1544652494943035462';
+const REDDIT_RELAY_TARGET_CHANNEL_ID = '1544015194475339896';
 const DEFAULT_INDEX_MAX_MESSAGES = 5000;
 const INDEX_MAX_MESSAGES = Number.parseInt(process.env.INDEX_MAX_MESSAGES ?? `${DEFAULT_INDEX_MAX_MESSAGES}`, 10);
 const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX_MESSAGES > 0
@@ -584,6 +588,35 @@ function shouldSkipBeforeHandling(message) {
 
 function shouldReply(message) {
   return isAddressedToJarvis(message);
+}
+
+// Guardia dei permessi per-guild: se la guild ha un restrict_role_id impostato,
+// solo chi ha quel ruolo (o il server owner) può usare Jarvis. Nessun log e
+// nessuna elaborazione ulteriore del contenuto del messaggio in caso di blocco.
+async function isBlockedByGuildRestriction(message) {
+  if (!message.guildId) return false;
+
+  let settings;
+  try {
+    settings = await getGuildSettings(message.guildId);
+  } catch {
+    return false;
+  }
+
+  if (!settings.restrictRoleId) return false;
+
+  const isOwner = message.guild?.ownerId === message.author.id;
+  const hasRole = message.member?.roles?.cache?.has(settings.restrictRoleId) ?? false;
+
+  if (isOwner || hasRole) return false;
+
+  try {
+    await message.author.send('Non hai il permesso di usare Jarvis su questo server.');
+  } catch {
+    // DM non consegnabile: nessun messaggio pubblico, nessun log.
+  }
+
+  return true;
 }
 
 function cleanUserPrompt(message) {
@@ -1131,9 +1164,24 @@ function getLocalFallbackReply(prompt, error) {
   return 'Gemini ora è pieno o in quota, ma io non mollo: posso comunque aiutarti con archivio (`Jarvis archivio <testo>`), comandi, risposte brevi e ricerche online se Tavily è configurato.';
 }
 
-async function buildPromptWithArchiveContext(prompt) {
+async function buildPromptWithArchiveContext(prompt, guildId) {
   if (!shouldUseArchive(prompt)) {
     return { prompt, usedArchive: false, archiveHadResults: false, archiveSearchAttempted: false };
+  }
+
+  if (guildId) {
+    let guildSettings;
+    try {
+      guildSettings = await getGuildSettings(guildId);
+    } catch {
+      guildSettings = null;
+    }
+
+    // Memoria di lavoro disattivata per questa guild: niente query all'archivio,
+    // così i dati lavorativi non entrano mai nel contesto del modello qui.
+    if (guildSettings && !guildSettings.enableWorkMemory) {
+      return { prompt, usedArchive: false, archiveHadResults: false, archiveSearchAttempted: false };
+    }
   }
 
   try {
@@ -1287,9 +1335,9 @@ async function generateGeminiContentWithRetry(request) {
   throw lastError;
 }
 
-async function askAi(channelId, prompt) {
+async function askAi(channelId, prompt, guildId) {
   const history = getChannelHistory(channelId);
-  const archivePrompt = await buildPromptWithArchiveContext(prompt);
+  const archivePrompt = await buildPromptWithArchiveContext(prompt, guildId);
   const needsWebSearch = shouldUseWebSearch(prompt);
   const shouldFallbackToWeb = !archivePrompt.archiveHadResults
     && (needsWebSearch || archivePrompt.archiveSearchAttempted || archivePrompt.shouldReportMissingArchiveAnswer || archivePrompt.archiveSearchError);
@@ -1363,6 +1411,103 @@ Fonte: risultati Tavily disponibili nei log/contesto.`;
     if (localFallbackReply) return localFallbackReply;
 
     return buildGeminiUserErrorMessage(error);
+  }
+}
+
+function isRedditRelaySourceMessage(message) {
+  return message.guildId === REDDIT_RELAY_GUILD_ID
+    && message.channelId === REDDIT_RELAY_SOURCE_CHANNEL_ID
+    && message.author.id !== client.user?.id;
+}
+
+function getPrimaryRedditEmbed(message) {
+  return message.embeds.find((embed) => embed.title || embed.description || embed.url) ?? null;
+}
+
+function buildRedditTranslationPrompt({ title, description, content }) {
+  return `Traduci in italiano, in modo letterale, i campi seguenti provenienti da un post Reddit.
+Regole obbligatorie:
+- Non tradurre e non alterare username Reddit (es. /u/nome, u/nome) o nomi di subreddit (r/nome): lasciali identici.
+- Non tradurre e non alterare eventuali link/URL presenti nel testo: lasciali identici.
+- Non aggiungere commenti, opinioni, spiegazioni o note personali: traduci solo il testo fornito, letteralmente.
+- Se un campo è vuoto, restituiscilo come stringa vuota.
+Rispondi SOLO con JSON valido, senza markdown, in questo formato esatto:
+{"title":"...","description":"..."}
+
+TITOLO:
+${title || '(vuoto)'}
+
+TESTO:
+${[content, description].filter(Boolean).join('\n\n') || '(vuoto)'}`;
+}
+
+async function translateRedditPostToItalian(source) {
+  const prompt = buildRedditTranslationPrompt(source);
+
+  if (ACTIVE_AI_PROVIDER === 'openai') {
+    const response = await generateOpenAiResponseWithRetry({
+      model: OPENAI_MODEL,
+      instructions: "Sei un traduttore letterale verso l'italiano. Rispondi solo con JSON valido.",
+      input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
+      temperature: 0.1
+    });
+
+    const parsed = JSON.parse(stripJsonFence(extractOpenAiText(response)));
+    return {
+      title: String(parsed.title ?? '').trim(),
+      description: String(parsed.description ?? '').trim()
+    };
+  }
+
+  const response = await generateGeminiContentWithRetry({
+    model: GEMINI_MODEL,
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: {
+      temperature: 0.1,
+      responseMimeType: 'application/json'
+    }
+  });
+
+  const parsed = JSON.parse(stripJsonFence(response.text ?? ''));
+  return {
+    title: String(parsed.title ?? '').trim(),
+    description: String(parsed.description ?? '').trim()
+  };
+}
+
+// Relay automatico Reddit-Raw -> Teorie-e-Leak: traduce in italiano i post che
+// MonitoRSS (o un'altra fonte) pubblica nel canale sorgente. Se la traduzione
+// fallisce, non pubblica nulla piuttosto che un post tradotto a metà.
+async function relayRedditMessageToTeorieELeak(message) {
+  const embed = getPrimaryRedditEmbed(message);
+  const content = (message.content ?? '').trim();
+
+  if (!embed && !content) return;
+
+  try {
+    const translated = await translateRedditPostToItalian({
+      title: embed?.title ?? '',
+      description: embed?.description ?? '',
+      content
+    });
+
+    if (!translated.title && !translated.description) return;
+
+    const targetChannel = await client.channels.fetch(REDDIT_RELAY_TARGET_CHANNEL_ID);
+    if (!targetChannel?.isTextBased()) return;
+
+    const originalUrl = embed?.url ?? null;
+    const image = embed?.image?.url ?? embed?.thumbnail?.url ?? null;
+
+    const embedPayload = new EmbedBuilder().setColor(0xff4500).setFooter({ text: 'Tradotto automaticamente da Jarvis' });
+    if (translated.title) embedPayload.setTitle(translated.title.slice(0, 256));
+    if (translated.description) embedPayload.setDescription(translated.description.slice(0, 4096));
+    if (originalUrl) embedPayload.addFields({ name: 'Post originale', value: originalUrl });
+    if (image) embedPayload.setImage(image);
+
+    await targetChannel.send({ embeds: [embedPayload] });
+  } catch (error) {
+    logErrorWithStack('reddit:relay', 'Errore durante la traduzione/pubblicazione del post Reddit:', error);
   }
 }
 
@@ -1501,12 +1646,19 @@ client.on(Events.ShardError, (error, shardId) => {
 });
 
 client.on(Events.MessageCreate, async (message) => {
+  if (isRedditRelaySourceMessage(message)) {
+    await relayRedditMessageToTeorieELeak(message);
+    return;
+  }
+
   // Ignora messaggi di altri bot per evitare loop o risposte indesiderate.
   if (message.author.bot) return;
 
   // Prima di qualsiasi chiamata a Supabase, provider AI o Tavily, rispondi solo se
   // Jarvis è stato chiamato direttamente o il messaggio inizia con "Jarvis".
   if (shouldSkipBeforeHandling(message)) return;
+
+  if (await isBlockedByGuildRestriction(message)) return;
 
   if (isArchiveCommand(message)) {
     await handleArchiveCommand(message);
@@ -1527,7 +1679,7 @@ client.on(Events.MessageCreate, async (message) => {
 
     const customReply = getCustomReply(prompt);
     const routeReply = customReply ? null : await maybeHandleRoutePlanningFromImage(message, prompt);
-    const reply = customReply ?? routeReply ?? await askAi(message.channel.id, prompt);
+    const reply = customReply ?? routeReply ?? await askAi(message.channel.id, prompt, message.guildId);
 
     rememberMessage(message.channel.id, 'user', prompt);
     rememberMessage(message.channel.id, 'assistant', reply);
