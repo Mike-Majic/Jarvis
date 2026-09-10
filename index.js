@@ -100,6 +100,8 @@ const ARCHIVE_SHORT_COMMAND_PREFIX = 'jarvis archivio';
 const REDDIT_RELAY_GUILD_ID = '1544011913564786809';
 const REDDIT_RELAY_SOURCE_CHANNEL_ID = '1544652494943035462';
 const REDDIT_RELAY_TARGET_CHANNEL_ID = '1544015194475339896';
+const YOUTUBE_RELAY_SOURCE_CHANNEL_ID = '1544652406913110067';
+const YOUTUBE_RELAY_TARGET_CHANNEL_ID = '1544015154839158794';
 const DEFAULT_INDEX_MAX_MESSAGES = 5000;
 const INDEX_MAX_MESSAGES = Number.parseInt(process.env.INDEX_MAX_MESSAGES ?? `${DEFAULT_INDEX_MAX_MESSAGES}`, 10);
 const SAFE_INDEX_MAX_MESSAGES = Number.isFinite(INDEX_MAX_MESSAGES) && INDEX_MAX_MESSAGES > 0
@@ -1511,6 +1513,56 @@ async function relayRedditMessageToTeorieELeak(message) {
   }
 }
 
+function isYoutubeRelaySourceMessage(message) {
+  return message.guildId === REDDIT_RELAY_GUILD_ID
+    && message.channelId === YOUTUBE_RELAY_SOURCE_CHANNEL_ID
+    && message.author.id !== client.user?.id;
+}
+
+function getPrimaryYoutubeEmbed(message) {
+  return message.embeds.find((embed) => embed.title || embed.description || embed.url) ?? null;
+}
+
+function stripEveryoneMention(text) {
+  return String(text ?? '').replaceAll('@everyone', '').trim();
+}
+
+// Relay automatico Youtube-Raw -> News-e-Trailer: stessa logica del relay
+// Reddit, senza però ripetere la mention @everyone usata da MonitoRSS per
+// notificare la community. Se la traduzione fallisce, non pubblica nulla.
+async function relayYoutubeMessageToNewsETrailer(message) {
+  const embed = getPrimaryYoutubeEmbed(message);
+  const content = stripEveryoneMention(message.content);
+
+  if (!embed && !content) return;
+
+  try {
+    const translated = await translateRedditPostToItalian({
+      title: embed?.title ?? '',
+      description: embed?.description ?? '',
+      content
+    });
+
+    if (!translated.title && !translated.description) return;
+
+    const targetChannel = await client.channels.fetch(YOUTUBE_RELAY_TARGET_CHANNEL_ID);
+    if (!targetChannel?.isTextBased()) return;
+
+    const originalUrl = embed?.url ?? null;
+    const thumbnail = embed?.thumbnail?.url ?? embed?.image?.url ?? null;
+
+    const embedPayload = new EmbedBuilder().setColor(0xff0000).setFooter({ text: 'Tradotto automaticamente da Jarvis' });
+    if (translated.title) embedPayload.setTitle(translated.title.slice(0, 256));
+    if (translated.description) embedPayload.setDescription(translated.description.slice(0, 4096));
+    if (originalUrl) embedPayload.addFields({ name: 'Video originale', value: originalUrl });
+    if (thumbnail) embedPayload.setImage(thumbnail);
+
+    await targetChannel.send({ embeds: [embedPayload], allowedMentions: { parse: [] } });
+  } catch (error) {
+    logErrorWithStack('youtube:relay', 'Errore durante la traduzione/pubblicazione del video YouTube:', error);
+  }
+}
+
 function getWebSocketStatusLabel(status) {
   return `${Status[status] ?? 'Unknown'} (${status})`;
 }
@@ -1648,6 +1700,11 @@ client.on(Events.ShardError, (error, shardId) => {
 client.on(Events.MessageCreate, async (message) => {
   if (isRedditRelaySourceMessage(message)) {
     await relayRedditMessageToTeorieELeak(message);
+    return;
+  }
+
+  if (isYoutubeRelaySourceMessage(message)) {
+    await relayYoutubeMessageToNewsETrailer(message);
     return;
   }
 

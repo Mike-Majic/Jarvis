@@ -455,6 +455,11 @@ Lo schema e la riga di esempio per "GTA VI Community Italia" sono in `supabase/g
 
 Una guild senza riga in `guild_settings` non ha restrizioni: nessun ruolo richiesto e memoria di lavoro attiva (comportamento invariato rispetto a prima).
 
-## Relay traduzioni Reddit (GTA VI Community Italia)
+## Relay traduzioni Reddit e Youtube (GTA VI Community Italia)
 
-Nel canale sorgente configurato (Reddit-Raw) Jarvis traduce in italiano, in modo letterale, i post che un altro bot (es. MonitoRSS) pubblica lì, e li ripubblica come embed nel canale di destinazione (Teorie-e-Leak). La traduzione non altera username Reddit, subreddit o link, e non aggiunge commenti. Se la chiamata al provider AI fallisce, l'errore viene loggato e non viene pubblicato nulla, per evitare post tradotti a metà.
+Nei canali sorgente configurati Jarvis traduce in italiano, in modo letterale, i post che un altro bot (es. MonitoRSS) pubblica lì, e li ripubblica come embed pulito nel canale di destinazione corrispondente:
+
+- Reddit-Raw -> Teorie-e-Leak: la traduzione non altera username Reddit, subreddit o link.
+- Youtube-Raw -> News-e-Trailer: la mention `@everyone` usata dalla fonte per notificare la community non viene tradotta né ripetuta nel messaggio pubblicato da Jarvis.
+
+In entrambi i casi la traduzione non aggiunge commenti propri e, se la chiamata al provider AI fallisce, l'errore viene loggato e non viene pubblicato nulla, per evitare post tradotti a metà.
